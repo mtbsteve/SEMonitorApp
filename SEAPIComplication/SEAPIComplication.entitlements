@@ -4,11 +4,7 @@
 <dict>
     <key>com.apple.security.application-groups</key>
     <array>
-        <string>group.com.mtbsteve.seapi</string>
-    </array>
-    <key>keychain-access-groups</key>
-    <array>
-        <string>$(AppIdentifierPrefix)com.mtbsteve.seapi</string>
+        <string>group.com.mtbsteve.semonitor</string>
     </array>
 </dict>
 </plist>

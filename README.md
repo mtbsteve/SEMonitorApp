@@ -112,7 +112,7 @@ open SEAPIApp.xcodeproj
    `SEAPIComplication`).
 2. Set your **Team** (Apple ID).
 3. If Xcode complains the bundle IDs are taken, change the prefix
-   `com.mtbsteve.seapi` to a unique one across both targets, then update the
+   `com.mtbsteve.semonitor` to a unique one across both targets, then update the
    matching **App Group** (`group.<your-prefix>`) and `keychain-access-group`
    in:
    - `project.yml`
@@ -162,7 +162,7 @@ SEAPIComplication/
 ```
 
 The Watch app and complication share an **App Group**
-(`group.com.mtbsteve.seapi`) for the cached snapshot, history, and the compact
+(`group.com.mtbsteve.semonitor`) for the cached snapshot, history, and the compact
 values the complication reads.
 
 ## Security notes

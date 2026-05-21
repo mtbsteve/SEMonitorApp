@@ -7,7 +7,7 @@ enum AppConfig {
     /// Shared App Group between Watch app and Complication. MUST match in both
     /// entitlement files and both Swift constants — a mismatch silently breaks
     /// the complication (it shows "—").
-    static let appGroupID = "group.com.mtbsteve.seapi"
+    static let appGroupID = "group.com.mtbsteve.semonitor"
 
     static let baseURL = URL(string: "https://monitoringapi.solaredge.com")!
 

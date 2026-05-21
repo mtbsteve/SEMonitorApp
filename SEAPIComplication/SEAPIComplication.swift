@@ -3,7 +3,7 @@ import SwiftUI
 
 /// Shared App Group ID — MUST match Watch app's AppConfig.appGroupID and both
 /// entitlement files exactly. A mismatch silently breaks the complication.
-private let appGroupID = "group.com.mtbsteve.seapi"
+private let appGroupID = "group.com.mtbsteve.semonitor"
 
 // MARK: - Timeline entry
 
@@ -125,7 +125,7 @@ struct SEAPIComplicationBundle: WidgetBundle {
 }
 
 struct SolarComplication: Widget {
-    let kind: String = "com.mtbsteve.seapi.solar"
+    let kind: String = "com.mtbsteve.semonitor.solar"
 
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: SolarProvider()) { entry in
