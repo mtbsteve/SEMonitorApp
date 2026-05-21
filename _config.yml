@@ -1,0 +1,13 @@
+title: SE Monitor
+description: Privacy policy and project page for the SE Monitor watchOS app (official SolarEdge Monitoring API).
+theme: jekyll-theme-cayman
+lang: de
+
+# Keep build artefacts and code out of the published Pages site.
+exclude:
+  - SEAPIApp.xcodeproj
+  - "SEAPIApp Watch App"
+  - SEAPIComplication
+  - project.yml
+  - "*.entitlements"
+  - se_monitoring_api.pdf

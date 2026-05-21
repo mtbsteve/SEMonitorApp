@@ -1,0 +1,29 @@
+## XcodeGen-generated project
+*.xcodeproj/
+*.xcworkspace/
+
+## Build
+build/
+DerivedData/
+*.xcuserstate
+
+## Xcode user data
+xcuserdata/
+*.xcuserdatad
+
+## Swift Package Manager
+.swiftpm/
+.build/
+Package.resolved
+
+## macOS
+.DS_Store
+
+## Secrets — never commit
+*.token
+*.key
+APIKey*
+Secrets.xcconfig
+
+## SolarEdge's copyrighted API spec (kept locally for reference only)
+se_monitoring_api.pdf
