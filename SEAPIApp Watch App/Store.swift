@@ -6,12 +6,17 @@ import WidgetKit
 final class SEStore: ObservableObject {
 
     // MARK: - Persisted credentials / config
+    //
+    // Stored in the App Group's UserDefaults so the complication target
+    // (a separate process) can also read the API key + site ID and fetch
+    // its own timeline data when the watch app isn't running.
+    private static let groupStore = UserDefaults(suiteName: AppConfig.appGroupID)
 
-    @AppStorage("seapi_api_key") var apiKey: String = ""
-    @AppStorage("seapi_last_key") var lastEnteredKey: String = ""
-    @AppStorage("seapi_site_id") var siteId: Int = 0
-    @AppStorage("seapi_site_name") var siteName: String = ""
-    @AppStorage("seapi_currency") var currency: String = "EUR"
+    @AppStorage("seapi_api_key", store: SEStore.groupStore) var apiKey: String = ""
+    @AppStorage("seapi_last_key", store: SEStore.groupStore) var lastEnteredKey: String = ""
+    @AppStorage("seapi_site_id", store: SEStore.groupStore) var siteId: Int = 0
+    @AppStorage("seapi_site_name", store: SEStore.groupStore) var siteName: String = ""
+    @AppStorage("seapi_currency", store: SEStore.groupStore) var currency: String = "EUR"
 
     // MARK: - Published state
 
@@ -124,14 +129,18 @@ final class SEStore: ObservableObject {
                 return HistorySeries.Point(t: sample.t, v: sample.v + avgCombinedKW)
             }
 
-            // /overview.currentPower is a server-side aggregate that refreshes
-            // every 15–20 min and frequently reads 0 even when the inverter
-            // is producing. Fall back to the most recent corrected-solar
-            // sample (≤15 min stale) so the "NOW" card never shows 0 just
-            // because the aggregate is behind.
-            let currentFromOverview = ov.currentPower.power / 1000.0
-            let currentFromHistory = correctedSolar.last?.v ?? 0
-            let currentPower = max(currentFromOverview, currentFromHistory)
+            // Current panel-side PV: same physics correction as the chart
+            // and Production Today. /overview.currentPower is the AC inverter
+            // output, which at night reads the battery's discharge through
+            // the inverter — that's NOT solar. Adding signed battery power
+            // (positive=charging, negative=discharging) recovers panel-side:
+            //   - night with battery discharging: AC=2, batt=−2 → 0 (no sun)
+            //   - day with battery charging: AC=5, batt=+2 → 7 (PV total)
+            //   - day, no battery activity: AC=5, batt=0 → 5
+            // Clamp at 0 to absorb sample-timing jitter between the two APIs.
+            let currentACkW = ov.currentPower.power / 1000.0
+            let latestBatteryKW = b.combinedPowerKW.last?.v ?? 0
+            let currentPower = max(0, currentACkW + latestBatteryKW)
 
             // Build snapshot
             let snap = Snapshot(
@@ -235,12 +244,15 @@ final class SEStore: ObservableObject {
     }
 
     /// Write a compact set of values for the complication, plus reload timelines.
+    /// Also stamps `last_api_fetch` so the complication's TimelineProvider knows
+    /// the cache is fresh and skips its own (quota-consuming) fetch.
     func saveComplicationData() {
         guard let d = UserDefaults(suiteName: AppConfig.appGroupID) else { return }
         d.set(snapshot.currentPowerKW ?? 0, forKey: "complication_power")
         d.set(snapshot.batterySoC, forKey: "complication_soc")
         d.set(snapshot.currency, forKey: "complication_currency")
         d.set(Date(), forKey: "complication_updated")
+        d.set(Date(), forKey: "last_api_fetch")
         WidgetCenter.shared.reloadAllTimelines()
     }
 }

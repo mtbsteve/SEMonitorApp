@@ -1,15 +1,12 @@
 import WidgetKit
 import SwiftUI
 
-/// Shared App Group ID — MUST match Watch app's AppConfig.appGroupID and both
-/// entitlement files exactly. A mismatch silently breaks the complication.
-private let appGroupID = "group.com.mtbsteve.semonitor"
-
 // MARK: - Timeline entry
 
 struct SolarEntry: TimelineEntry {
     let date: Date
-    /// Current PV power in kW.
+    /// Current panel-side PV power in kW (AC + signed battery, so battery-only
+    /// discharge at night reads 0, not the inverter's AC output).
     let power: Double
     /// Per-battery SoC % at the most recent telemetry. Empty = no batteries.
     let batterySoC: [Double]
@@ -23,19 +20,73 @@ struct SolarProvider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (SolarEntry) -> Void) {
-        completion(read())
+        completion(readCache())
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<SolarEntry>) -> Void) {
-        let now = Date()
-        let entry = read()
-        // Refresh every 15 min — matches the Watch app's auto-refresh cadence.
-        let next = now.addingTimeInterval(15 * 60)
-        completion(Timeline(entries: [entry], policy: .after(next)))
+        Task {
+            let entry = await fetchOrCache()
+            // Schedule next refresh in 15 min. WidgetKit may delay this based
+            // on system heuristics (battery, usage), but it's the cadence we
+            // ask for. Matches the watch app's auto-refresh and stays under
+            // SolarEdge's 300/day quota.
+            let next = Date().addingTimeInterval(15 * 60)
+            completion(Timeline(entries: [entry], policy: .after(next)))
+        }
     }
 
-    private func read() -> SolarEntry {
-        guard let d = UserDefaults(suiteName: appGroupID) else {
+    // MARK: - Fetch / cache
+
+    /// Try to fetch fresh data from the SolarEdge API. If credentials are
+    /// missing, the API call fails, or the last fetch was very recent (within
+    /// 12 min — sharing quota with the main app), fall back to the cached
+    /// snapshot the watch app last wrote.
+    private func fetchOrCache() async -> SolarEntry {
+        guard let store = UserDefaults(suiteName: AppConfig.appGroupID) else {
+            return SolarEntry(date: Date(), power: 0, batterySoC: [])
+        }
+
+        let apiKey = store.string(forKey: "seapi_api_key") ?? ""
+        let siteId = store.integer(forKey: "seapi_site_id")
+        guard !apiKey.isEmpty, apiKey != AppConfig.demoToken, siteId != 0 else {
+            return readCache()
+        }
+
+        // Quota guard: if the watch app or a previous complication fetch wrote
+        // the cache within the last 12 minutes, reuse it instead of hitting
+        // the API again. 15 min × (~96 base + complication) would otherwise
+        // double the daily API consumption.
+        if let lastFetch = store.object(forKey: "last_api_fetch") as? Date,
+           Date().timeIntervalSince(lastFetch) < 12 * 60 {
+            return readCache()
+        }
+
+        do {
+            async let overview = SolarEdgeAPI.fetchOverview(siteId: siteId, apiKey: apiKey)
+            async let battery = SolarEdgeAPI.fetchBatteryHistory(siteId: siteId, apiKey: apiKey)
+            let (ov, b) = try await (overview, battery)
+
+            let currentAC = ov.currentPower.power / 1000.0
+            let latestBattery = b.combinedPowerKW.last?.v ?? 0
+            let currentPV = max(0, currentAC + latestBattery)
+            let socs = b.latestSoC
+
+            let entry = SolarEntry(date: Date(), power: currentPV, batterySoC: socs)
+
+            // Update the cache so the watch app sees this too.
+            store.set(currentPV, forKey: "complication_power")
+            store.set(socs, forKey: "complication_soc")
+            store.set(Date(), forKey: "complication_updated")
+            store.set(Date(), forKey: "last_api_fetch")
+
+            return entry
+        } catch {
+            return readCache()
+        }
+    }
+
+    private func readCache() -> SolarEntry {
+        guard let d = UserDefaults(suiteName: AppConfig.appGroupID) else {
             return SolarEntry(date: Date(), power: 0, batterySoC: [])
         }
         let p = d.double(forKey: "complication_power")
