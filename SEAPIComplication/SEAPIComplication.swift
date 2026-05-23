@@ -114,35 +114,59 @@ struct SolarComplicationView: View {
 
     private var powerString: String { String(format: "%.1f", entry.power) }
 
+    /// Upper bound of the circular gauge. Pick generously so typical readings
+    /// sweep the ring nicely instead of hitting the rail. Two SE10K inverters
+    /// can theoretically deliver 20 kW combined; in practice peak is ~13 kW.
+    private static let gaugeMax: Double = 15.0
+
+    /// Sun when producing, moon when not — used by both circular and corner.
+    private var producingNow: Bool { entry.power > 0.05 }
+    private var sunMoonSymbol: String { producingNow ? "sun.max.fill" : "moon.zzz.fill" }
+    private var sunMoonTint: Color { producingNow ? .yellow : .gray }
+
     private var circular: some View {
-        ZStack {
-            AccessoryWidgetBackground()
-            VStack(spacing: 0) {
-                Image(systemName: "sun.max.fill").font(.system(size: 10))
-                Text(powerString).font(.system(size: 14, weight: .bold, design: .monospaced))
-                Text("kW").font(.system(size: 8))
+        Gauge(value: min(max(entry.power, 0), Self.gaugeMax), in: 0...Self.gaugeMax) {
+            EmptyView()
+        } currentValueLabel: {
+            ZStack {
+                // Power value at the geometric centre of the ring.
+                Text(powerString)
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                // "kW" pushed toward the bottom so it lands in the open arc
+                // gap between the ring's two endpoints — like "6°" / "13°"
+                // on Apple's temperature complication.
+                Text("kW")
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .offset(y: 16)
             }
+            .foregroundStyle(.white)
         }
+        .gaugeStyle(.accessoryCircular)
+        // Gradient sweeps the ring as production rises:
+        //   0 kW (no sun) → red → orange → yellow → green (peak production).
+        .tint(Gradient(colors: [.red, .orange, .yellow, .green]))
     }
 
     private var inline: some View {
         Label {
             Text("\(powerString) kW")
         } icon: {
-            Image(systemName: "sun.max.fill")
+            Image(systemName: sunMoonSymbol)
         }
     }
 
     private var corner: some View {
-        Text("\(powerString) kW")
-            .font(.system(size: 12, weight: .semibold, design: .monospaced))
-            .widgetLabel("Solar")
+        Image(systemName: sunMoonSymbol)
+            .foregroundStyle(sunMoonTint)
+            .widgetLabel {
+                Text("Solar \(powerString) kW")
+            }
     }
 
     private var rectangular: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
-                Image(systemName: "sun.max.fill").foregroundColor(.yellow)
+                Image(systemName: sunMoonSymbol).foregroundColor(sunMoonTint)
                 Text("\(powerString) kW")
                     .font(.system(size: 16, weight: .bold, design: .monospaced))
             }

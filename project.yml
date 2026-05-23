@@ -34,6 +34,11 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         INFOPLIST_KEY_CFBundleDisplayName: "SE Monitor"
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        # Required by Xcode's iOS app validation even though the container is
+        # invisible and never actually launches (LSApplicationLaunchProhibited).
+        # Matches what TibberWatch's container declares.
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown"
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
         TARGETED_DEVICE_FAMILY: "1,2"
         VALIDATE_PRODUCT: YES
         # No entitlements — the watchapp2-container is invisible to users
