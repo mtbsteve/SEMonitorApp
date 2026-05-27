@@ -12,6 +12,8 @@ Assistant, no third-party servers, no iPhone companion required.
 **Datenschutz / Privacy policy:** <https://mtbsteve.github.io/SEAPIApp/Datenschutzrichtlinie.html>
 ([Markdown source](Datenschutzrichtlinie.md))
 
+** All information about your SolarEdge PV system is derived from the official SolarEdge Monitoring system. Please review the API terms and conditions at this link: <https://monitoring.solaredge.com/solaredge-web/p/license>
+
 ## What it shows
 
 Three vertically-paged views on the Watch:
