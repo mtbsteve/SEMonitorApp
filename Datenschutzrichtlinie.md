@@ -1,6 +1,6 @@
 # Datenschutzrichtlinie für SE Monitor
 
-*Stand: 21.5.2026*
+*Stand: 26.5.2026*
 
 Diese Datenschutzrichtlinie beschreibt, welche Daten die App **SE Monitor** (im
 Folgenden „die App") verarbeitet, wie sie verarbeitet werden und welche Rechte Sie als
