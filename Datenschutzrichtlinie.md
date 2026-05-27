@@ -60,6 +60,8 @@ Watch und den SolarEdge-Servern statt.
 
 Für die Datenverarbeitung durch SolarEdge gelten die Datenschutzbestimmungen von
 **SolarEdge Technologies, Inc.** unter <https://www.solaredge.com/legal/privacy-policy>.
+Für den Zugriff über das SolarEdge API auf das SolarEdge Monitoring System gelten die Bestimmungen unter <https://monitoring.solaredge.com/solaredge-web/p/license>
+
 
 ## 5. Drittanbieter
 
