@@ -58,7 +58,7 @@ enthalten ausschließlich Daten aus Ihrer eigenen SolarEdge-Installation. Der An
 der App erhält von dieser Kommunikation nichts; sie findet direkt zwischen Ihrer Apple
 Watch und den SolarEdge-Servern statt.
 
-Für die Datenverarbeitung durch SolarEdge ![SELogo](docs/"SolarEdge Logo_CMYK.png") gelten die Datenschutzbestimmungen von
+Für die Datenverarbeitung durch SolarEdge ![SELogo](docs/SolarEdge Logo_CMYK.png) gelten die Datenschutzbestimmungen von
 **SolarEdge Technologies, Inc.** unter <https://www.solaredge.com/legal/privacy-policy>.
 Für den Zugriff über das SolarEdge API auf das SolarEdge Monitoring System gelten die Bestimmungen unter <https://monitoring.solaredge.com/solaredge-web/p/license>
 
