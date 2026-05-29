@@ -1,6 +1,6 @@
 # Datenschutzrichtlinie für SE Monitor
 
-*Stand: 21.5.2026*
+*Stand: 26.5.2026*
 
 Diese Datenschutzrichtlinie beschreibt, welche Daten die App **SE Monitor** (im
 Folgenden „die App") verarbeitet, wie sie verarbeitet werden und welche Rechte Sie als
@@ -60,6 +60,8 @@ Watch und den SolarEdge-Servern statt.
 
 Für die Datenverarbeitung durch SolarEdge gelten die Datenschutzbestimmungen von
 **SolarEdge Technologies, Inc.** unter <https://www.solaredge.com/legal/privacy-policy>.
+Für den Zugriff über das SolarEdge API auf das SolarEdge Monitoring System gelten die Bestimmungen unter <https://monitoring.solaredge.com/solaredge-web/p/license>
+
 
 ## 5. Drittanbieter
 

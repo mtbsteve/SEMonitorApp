@@ -8,7 +8,7 @@ Standalone watchOS app that displays your SolarEdge PV system on your wrist,
 talking directly to the official SolarEdge Monitoring API.
 
 - **App Store**: *(Link folgt nach Veröffentlichung)*
-- **Quellcode auf GitHub**: <https://github.com/mtbsteve/SEAPIApp>
+- **Quellcode auf GitHub**: <https://github.com/mtbsteve/SEMonitorApp>
 - **Datenschutzrichtlinie / Privacy Policy**: [Datenschutzrichtlinie](Datenschutzrichtlinie.html)
 
 ---

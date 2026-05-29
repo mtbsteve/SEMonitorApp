@@ -9,8 +9,10 @@ Assistant, no third-party servers, no iPhone companion required.
 > "SolarEdge" is a trademark of SolarEdge Technologies, Inc.; the name is used
 > here only to describe the SolarEdge Monitoring API this app reads from.
 
-**Datenschutz / Privacy policy:** <https://mtbsteve.github.io/SEAPIApp/Datenschutzrichtlinie.html>
+**Datenschutz / Privacy policy:** <https://mtbsteve.github.io/SEMonitorApp/Datenschutzrichtlinie.html>
 ([Markdown source](Datenschutzrichtlinie.md))
+
+** All information about your SolarEdge PV system is derived from the official SolarEdge Monitoring system. Please review the API terms and conditions at this link: <https://monitoring.solaredge.com/solaredge-web/p/license>
 
 ## What it shows
 
