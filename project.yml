@@ -10,7 +10,10 @@ settings:
   base:
     SWIFT_VERSION: "5.9"
     MARKETING_VERSION: "1.0.0"
-    CURRENT_PROJECT_VERSION: "1"
+    # Bumped to 2 to address App Store rejection (build 1 had UIRequiredDeviceCapabilities
+    # in the container's auto-generated Info.plist; resubmission uses a custom plist
+    # that omits that key entirely).
+    CURRENT_PROJECT_VERSION: "2"
     ENABLE_USER_SCRIPT_SANDBOXING: NO
 
 targets:
@@ -29,16 +32,14 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.mtbsteve.semonitor
         PRODUCT_NAME: "SE Monitor"
-        GENERATE_INFOPLIST_FILE: YES
+        # Custom Info.plist (not auto-generated). The auto-generated plist
+        # bakes in UIRequiredDeviceCapabilities = ["arm64"], which App Store
+        # review rejected (the watchapp2-container is invisible and never
+        # actually executes on the iPhone CPU, so it shouldn't require any
+        # iPhone capabilities). Our explicit plist omits that key entirely.
+        INFOPLIST_FILE: SEAPIAppContainer/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
-        INFOPLIST_KEY_CFBundleDisplayName: "SE Monitor"
-        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
-        # Required by Xcode's iOS app validation even though the container is
-        # invisible and never actually launches (LSApplicationLaunchProhibited).
-        # Matches what TibberWatch's container declares.
-        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown"
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
         TARGETED_DEVICE_FAMILY: "1,2"
         VALIDATE_PRODUCT: YES
         # No entitlements — the watchapp2-container is invisible to users
