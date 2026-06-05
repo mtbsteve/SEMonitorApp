@@ -9,11 +9,11 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    MARKETING_VERSION: "1.0.0"
-    # Bumped to 2 to address App Store rejection (build 1 had UIRequiredDeviceCapabilities
-    # in the container's auto-generated Info.plist; resubmission uses a custom plist
-    # that omits that key entirely).
-    CURRENT_PROJECT_VERSION: "2"
+    # v1.0.0 (build 2) was the first public App Store release on 2026-05-31.
+    # v1.1 development starts here; build number resets so TestFlight treats
+    # the next upload as build 1 of a fresh version cycle.
+    MARKETING_VERSION: "1.1.0"
+    CURRENT_PROJECT_VERSION: "1"
     ENABLE_USER_SCRIPT_SANDBOXING: NO
 
 targets:
