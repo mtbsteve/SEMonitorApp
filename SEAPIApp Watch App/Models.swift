@@ -146,6 +146,11 @@ struct StorageData: Decodable {
         let power: Double?
         let batteryState: Int?
         let internalTemp: Double?
+        /// AC energy used to charge the battery from the grid, in Wh. Per the
+        /// SolarEdge spec this is the grid-sourced portion of charging — the
+        /// term we must SUBTRACT from PV so grid charging (e.g. winter cheap-
+        /// tariff top-ups) isn't misreported as solar generation.
+        let acGridCharging: Double?
 
         /// SolarEdge docs say the SoC field is `stateOfCharge`, but the live API
         /// for SolarEdge Home Battery sites returns `batteryPercentageState`.
@@ -158,11 +163,13 @@ struct StorageData: Decodable {
             self.power = try? c.decode(Double.self, forKey: .power)
             self.batteryState = try? c.decode(Int.self, forKey: .batteryState)
             self.internalTemp = try? c.decode(Double.self, forKey: .internalTemp)
+            self.acGridCharging = try? c.decode(Double.self, forKey: .acGridCharging)
         }
 
         private enum CodingKeys: String, CodingKey {
             case timeStamp, stateOfCharge, batteryPercentageState
             case power, batteryState, internalTemp
+            case acGridCharging = "ACGridCharging"
         }
     }
 }

@@ -63,12 +63,20 @@ struct SolarProvider: TimelineProvider {
 
         do {
             async let overview = SolarEdgeAPI.fetchOverview(siteId: siteId, apiKey: apiKey)
+            async let power = SolarEdgeAPI.fetchPowerHistory(siteId: siteId, apiKey: apiKey)
             async let battery = SolarEdgeAPI.fetchBatteryHistory(siteId: siteId, apiKey: apiKey)
-            let (ov, b) = try await (overview, battery)
+            let (ov, p, b) = try await (overview, power, battery)
 
+            // Current panel-side PV, identical correction to the watch app's
+            // Store.refresh(): AC inverter output + latest battery power, minus
+            // any grid-sourced battery charging (latest net grid import clamped
+            // to the charge). At night with the battery grid-charging this
+            // correctly reads 0 instead of mistaking grid charge for solar.
             let currentAC = ov.currentPower.power / 1000.0
             let latestBattery = b.combinedPowerKW.last?.v ?? 0
-            let currentPV = max(0, currentAC + latestBattery)
+            let currentNetImport = max(0, p.grid.last?.v ?? 0)
+            let gridCharge = min(max(0, latestBattery), currentNetImport)
+            let currentPV = max(0, currentAC + latestBattery - gridCharge)
             let socs = b.latestSoC
 
             let entry = SolarEntry(date: Date(), power: currentPV, batterySoC: socs)
