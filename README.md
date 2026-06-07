@@ -36,80 +36,63 @@ testing without an API key.
 
 Per the SolarEdge Monitoring API spec (March 2026 revision):
 
-| Endpoint                   | Purpose                                          |
-|----------------------------|--------------------------------------------------|
-| `/sites/list`              | One-time site discovery from an Account key      |
-| `/site/{id}/overview`      | Current power + today/lifetime energy            |
-| `/site/{id}/powerDetails`  | 24h Production / Consumption / FeedIn / Purchased |
-| `/site/{id}/storageData`   | 24h per-battery State-of-Charge + power          |
+| Endpoint                      | Purpose                                              |
+|-------------------------------|------------------------------------------------------|
+| `/sites/list`                 | One-time site discovery from an Account key          |
+| `/site/{id}/energyDetails` (DAY)     | Today's authoritative Production / Consumption / FeedIn / Purchased totals |
+| `/site/{id}/energyDetails` (QUARTER) | 24h 15-min series for the Power chart         |
+| `/site/{id}/currentPowerFlow` | Live PV / grid / load power + aggregate battery SoC  |
+| `/site/{id}/storageData`      | 24h per-battery State-of-Charge + charge/discharge   |
 
 Authentication is by `api_key` query parameter on every call, exactly as the
 spec mandates. The key is stored only in watchOS `UserDefaults` (App Group),
 and is sent only as the query parameter in HTTPS calls to
 `monitoringapi.solaredge.com`.
 
-## Energy accounting notes (DC-coupled batteries)
+## Energy accounting (DC-coupled batteries)
 
-SolarEdge Home Batteries are DC-coupled: PV energy that charges the battery
-goes directly **DC→DC** through the battery management hardware and never
-crosses the AC inverter. As a consequence the API's `/powerDetails.Production`
-meter (AC-side) under-reports total PV by the amount of DC battery charging
-and includes battery discharge through the inverter as if it were PV.
+On a DC-coupled SolarEdge Home Battery site, the API's meters are **AC-side**:
+`energyDetails.Production` is *inverter AC output*, so it **includes** battery
+discharge (battery→inverter→AC) and **excludes** PV that charged the battery
+DC-side. It therefore does **not** equal the SolarEdge portal's "Production",
+which is the **panel-side** figure (computed from per-optimizer DC data that
+the public API does not expose).
 
-This app corrects for it per 15-min slot:
+So the app **reconstructs the panel-side values by energy balance**, using
+SolarEdge's own authoritative daily AC totals (`energyDetails` with
+`timeUnit=DAY`) plus the battery charge/discharge from `storageData`:
 
 ```
-PV = AC_Production + battery_signed − grid_charge
+Production  = AC_Production + (charge − discharge) − grid_charge
+Consumption = AC_Production + Purchased − FeedIn   − grid_charge
+Exported    = FeedIn                                  (grid-metered, exact)
+NOW power   = currentPowerFlow.PV.currentPower        (panel-side, direct)
 ```
 
-- **`AC_Production`** — `/powerDetails.Production` (AC inverter output).
-- **`battery_signed`** — combined battery power (`/storageData`): charging
-  (positive) adds back the DC bypass; discharging (negative) cancels the
-  battery's AC contribution so night-time battery output doesn't masquerade
-  as solar.
-- **`grid_charge`** — the grid-sourced part of charging, which is **not**
-  solar (e.g. winter price-driven battery top-ups from the grid). It is
-  detected from the reliable aggregate meters rather than the per-battery
-  `ACGridCharging` field (which on multi-battery sites only the first
-  battery populates, so it under-reports). The site is importing exactly
-  when net grid = `Purchased − FeedIn` is positive, so:
-  `grid_charge = clamp(net_grid_import, 0, battery_charge)` per slot.
+where `grid_charge` (battery charged *from the grid*, e.g. price-driven
+overnight top-ups — which is not solar) is the summed `ACGridCharging`
+telemetry × 0.9 (AC→DC).
 
-Worked examples:
-- Night, both batteries grid-charging: `AC≈0, batt=+2, import≈+2.2` →
-  `grid_charge=2` → `PV = 0` ✓ (no sun)
-- Midday PV charge while exporting: `import<0` → `grid_charge=0` → full PV
-  credit ✓
-- Discharge slot: `charge=0` → `grid_charge=0` → discharge still subtracted ✓
+These match the portal to rounding on normal days. The **one** residual: on
+this site only the first battery reports `ACGridCharging`, so on nights when a
+*second* battery also grid-charges, `grid_charge` under-counts and Production
+reads slightly high. That data simply isn't in the API — an exact match in
+that case isn't achievable without SolarEdge's optimizer-level telemetry.
 
-**Production Today** is the integral of this corrected per-slot PV since
-midnight (each slot floored at ≥ 0). The NOW power and the complication apply
-the same formula to the latest instant. All three track the SolarEdge portal
-within sampling-resolution noise, including on days with grid charging.
-
-**Exported Today** comes straight from `/powerDetails.FeedIn` (exact).
-"Consumption Today" was originally shown but removed because the API's
-Consumption meter under-reports relative to the portal by 1–2 kWh on
-DC-coupled battery sites, with no formula derivable from the available API
-meters that reproduces the portal's number. Showing FeedIn instead keeps the
-displayed values exact.
-
-**PV Lifetime** is not shown because the API's lifetime is AC-side and
-therefore under-reports cumulative PV by the cumulative DC battery charge
-over the site's life. The portal's lifetime can read several MWh higher.
+`NOW` power comes straight from `currentPowerFlow.PV`, which is already
+panel-side and reads 0 at night regardless of battery activity — no
+reconstruction needed.
 
 ## Rate-limit accounting
 
-SolarEdge enforces **300 calls/day per account token**. Both the watch app's
-refresh and the complication's `getTimeline` now fetch **3 endpoints**
-(`overview` + `powerDetails` + `storageData`) — the complication needs
-`powerDetails` for the net-import signal that drives the grid-charge
-correction. To avoid double-spending the quota, the complication skips its
-own fetch if the shared cache was updated within the last **12 minutes**
-(`last_api_fetch` stamp), so the watch app's refreshes and the complication's
-refreshes share one ~15-minute cadence rather than stacking. In normal use
-this stays under the cap; to widen the margin, raise
-`AppConfig.refreshInterval` in `SEAPIApp Watch App/Models.swift`.
+SolarEdge enforces **300 calls/day per account token**. The watch-app refresh
+fetches **4 endpoints** (`energyDetails`×2 + `currentPowerFlow` + `storageData`);
+the complication's `getTimeline` fetches just **1** (`currentPowerFlow`, which
+carries both live PV and battery SoC). To avoid double-spending, the
+complication reuses the shared cache if it was updated within the last **12
+minutes** (`last_api_fetch` stamp). Real-world foreground usage stays well
+under the cap; raise `AppConfig.refreshInterval` in
+`SEAPIApp Watch App/Models.swift` to widen the margin further.
 
 ## Requirements
 

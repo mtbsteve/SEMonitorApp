@@ -44,6 +44,7 @@ enum DemoData {
         // Demo "exported" = positive (export) portion of net grid (we store
         // grid as positive = import, so export samples are negative).
         let todayExportedDemo = grid.reduce(0.0) { acc, p in acc + (p.v < 0 ? -p.v * 0.25 : 0) }
+        let todayConsumptionDemo = consumption.reduce(0.0) { $0 + $1.v * 0.25 }
         let latestSoC = battery.last?.v ?? 65
 
         let snap = Snapshot(
@@ -53,6 +54,7 @@ enum DemoData {
             currentPowerKW: currentPV,
             todayEnergyKWh: todayEnergy,
             todayExportedKWh: todayExportedDemo,
+            todayConsumptionKWh: todayConsumptionDemo,
             lifetimeEnergyKWh: 28_450,
             batterySoC: [latestSoC],
             fetchedAt: now

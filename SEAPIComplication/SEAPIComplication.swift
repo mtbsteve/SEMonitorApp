@@ -62,28 +62,21 @@ struct SolarProvider: TimelineProvider {
         }
 
         do {
-            async let overview = SolarEdgeAPI.fetchOverview(siteId: siteId, apiKey: apiKey)
-            async let power = SolarEdgeAPI.fetchPowerHistory(siteId: siteId, apiKey: apiKey)
-            async let battery = SolarEdgeAPI.fetchBatteryHistory(siteId: siteId, apiKey: apiKey)
-            let (ov, p, b) = try await (overview, power, battery)
-
-            // Current panel-side PV, identical correction to the watch app's
-            // Store.refresh(): AC inverter output + latest battery power, minus
-            // any grid-sourced battery charging (latest net grid import clamped
-            // to the charge). At night with the battery grid-charging this
-            // correctly reads 0 instead of mistaking grid charge for solar.
-            let currentAC = ov.currentPower.power / 1000.0
-            let latestBattery = b.combinedPowerKW.last?.v ?? 0
-            let currentNetImport = max(0, p.grid.last?.v ?? 0)
-            let gridCharge = min(max(0, latestBattery), currentNetImport)
-            let currentPV = max(0, currentAC + latestBattery - gridCharge)
-            let socs = b.latestSoC
+            // Single endpoint: currentPowerFlow gives panel-side PV power
+            // directly (excludes grid charging) plus aggregate battery SoC —
+            // everything the complication shows. Far cheaper than the watch
+            // app's full refresh.
+            let flow = try await SolarEdgeAPI.fetchPowerFlow(siteId: siteId, apiKey: apiKey)
+            let currentPV = max(0, flow.pvKW ?? 0)
+            // currentPowerFlow exposes only aggregate storage SoC, not per
+            // battery. Prefer the per-battery array the watch app cached if
+            // it's present; otherwise show the single aggregate value.
+            let cachedSoC = store.array(forKey: "complication_soc") as? [Double] ?? []
+            let socs = !cachedSoC.isEmpty ? cachedSoC : (flow.storageSoC.map { [$0] } ?? [])
 
             let entry = SolarEntry(date: Date(), power: currentPV, batterySoC: socs)
 
-            // Update the cache so the watch app sees this too.
             store.set(currentPV, forKey: "complication_power")
-            store.set(socs, forKey: "complication_soc")
             store.set(Date(), forKey: "complication_updated")
             store.set(Date(), forKey: "last_api_fetch")
 
