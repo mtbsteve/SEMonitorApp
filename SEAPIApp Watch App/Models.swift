@@ -85,27 +85,6 @@ struct OptionalSite: Decodable {
     }
 }
 
-struct OverviewEnvelope: Decodable {
-    let overview: SiteOverview
-}
-
-struct SiteOverview: Decodable, Equatable {
-    let lastUpdateTime: String?
-    let lifeTimeData: EnergyRevenue
-    let lastYearData: EnergyRevenue
-    let lastMonthData: EnergyRevenue
-    let lastDayData: EnergyRevenue
-    let currentPower: CurrentPower
-
-    struct EnergyRevenue: Decodable, Equatable {
-        let energy: Double
-        let revenue: Double?
-    }
-    struct CurrentPower: Decodable, Equatable {
-        let power: Double
-    }
-}
-
 struct PowerDetailsEnvelope: Decodable {
     let powerDetails: PowerDetails
 }
@@ -165,32 +144,20 @@ struct StorageData: Decodable {
         let timeStamp: String
         let stateOfCharge: Double?
         let power: Double?
-        let batteryState: Int?
-        let internalTemp: Double?
-        /// AC energy used to charge the battery from the grid, in Wh. Per the
-        /// SolarEdge spec this is the grid-sourced portion of charging — the
-        /// term we must SUBTRACT from PV so grid charging (e.g. winter cheap-
-        /// tariff top-ups) isn't misreported as solar generation.
-        let acGridCharging: Double?
 
         /// SolarEdge docs say the SoC field is `stateOfCharge`, but the live API
         /// for SolarEdge Home Battery sites returns `batteryPercentageState`.
-        /// Accept either, preferring the documented name if both somehow appear.
+        /// Accept either, preferring the documented name if both appear.
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             self.timeStamp = try c.decode(String.self, forKey: .timeStamp)
             self.stateOfCharge = (try? c.decode(Double.self, forKey: .stateOfCharge))
                 ?? (try? c.decode(Double.self, forKey: .batteryPercentageState))
             self.power = try? c.decode(Double.self, forKey: .power)
-            self.batteryState = try? c.decode(Int.self, forKey: .batteryState)
-            self.internalTemp = try? c.decode(Double.self, forKey: .internalTemp)
-            self.acGridCharging = try? c.decode(Double.self, forKey: .acGridCharging)
         }
 
         private enum CodingKeys: String, CodingKey {
-            case timeStamp, stateOfCharge, batteryPercentageState
-            case power, batteryState, internalTemp
-            case acGridCharging = "ACGridCharging"
+            case timeStamp, stateOfCharge, batteryPercentageState, power
         }
     }
 }
