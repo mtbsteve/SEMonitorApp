@@ -57,37 +57,35 @@ enum SolarEdgeAPI {
     /// the Home Assistant integration reads, which match the portal. This
     /// replaces the old powerDetails + battery-reconstruction approach.
     ///
-    /// Chart series are in kW (energy per 15-min slot ÷ 0.25h). Today's totals
-    /// are summed over slots since local midnight, in kWh.
-    /// Net grid = Purchased − FeedIn (positive = importing).
-    static func fetchEnergyHistory(siteId: Int, apiKey: String, now: Date = Date()) async throws
-        -> (solar: [HistorySeries.Point], consumption: [HistorySeries.Point], grid: [HistorySeries.Point],
-            todayProduction: Double, todayFeedIn: Double, todayConsumption: Double)
+    /// 24h power series for the chart, from powerDetails (15-min, in W → kW).
+    /// Returns (solar AC, consumption, net grid) where net grid = Purchased −
+    /// FeedIn (positive = importing). The chart's Solar line is corrected to
+    /// panel-side in the Store by adding per-slot battery charge; the totals
+    /// shown on the Overview come from energyDetails DAY (HA method), not here.
+    static func fetchPowerHistory(siteId: Int, apiKey: String, now: Date = Date()) async throws
+        -> (solar: [HistorySeries.Point], consumption: [HistorySeries.Point], grid: [HistorySeries.Point])
     {
         let start = now.addingTimeInterval(-24 * 3600)
-        let url = build(path: "/site/\(siteId)/energyDetails", apiKey: apiKey, query: [
-            URLQueryItem(name: "timeUnit", value: "QUARTER_OF_AN_HOUR"),
+        let url = build(path: "/site/\(siteId)/powerDetails", apiKey: apiKey, query: [
             URLQueryItem(name: "startTime", value: SolarEdgeDate.format(start)),
             URLQueryItem(name: "endTime", value: SolarEdgeDate.format(now)),
         ])
-        let env: EnergyDetailsEnvelope = try await get(url)
+        let env: PowerDetailsEnvelope = try await get(url)
 
-        // Each meter value is energy (Wh) over its 15-min slot. kW = Wh / 250.
         func points(_ meter: PowerDetails.Meter?) -> [HistorySeries.Point] {
             (meter?.values ?? []).compactMap { p in
                 guard let v = p.value, let t = SolarEdgeDate.parse(p.date) else { return nil }
-                return HistorySeries.Point(t: t, v: v / 250.0)   // Wh/15min → kW
+                return HistorySeries.Point(t: t, v: v / 1000.0)   // W → kW
             }
         }
         var byType: [String: PowerDetails.Meter] = [:]
-        for m in env.energyDetails.meters { byType[m.type] = m }
+        for m in env.powerDetails.meters { byType[m.type] = m }
 
         let production = points(byType["Production"])
         let consumption = points(byType["Consumption"])
         let purchased = points(byType["Purchased"])
         let feedIn = points(byType["FeedIn"])
 
-        // Net grid series (kW): Purchased − FeedIn, aligned by timestamp.
         var feedInMap: [Date: Double] = [:]
         for p in feedIn { feedInMap[p.t] = p.v }
         let purchasedMap = Dictionary(uniqueKeysWithValues: purchased.map { ($0.t, $0.v) })
@@ -96,29 +94,14 @@ enum SolarEdgeAPI {
             HistorySeries.Point(t: t, v: (purchasedMap[t] ?? 0) - (feedInMap[t] ?? 0))
         }
 
-        // Today's totals (kWh): sum the meter's raw Wh over today's slots.
-        let todayStart = Calendar.current.startOfDay(for: now)
-        func todayKWh(_ type: String) -> Double {
-            (byType[type]?.values ?? []).reduce(0.0) { acc, v in
-                guard let val = v.value, let t = SolarEdgeDate.parse(v.date), t >= todayStart
-                else { return acc }
-                return acc + val / 1000.0
-            }
-        }
-
-        return (production, consumption, net,
-                todayKWh("Production"), todayKWh("FeedIn"), todayKWh("Consumption"))
+        return (production, consumption, net)
     }
 
-    /// Battery data for the last 24h: per-battery SoC series (chart + chips),
-    /// plus today's charge / discharge / grid-charge energy (kWh) used to
-    /// reconstruct panel-side Production & true Consumption via energy balance.
-    /// gridChargeKWh is the RAW summed ACGridCharging × 0.9 (AC→DC); only the
-    /// first battery reports it on this site, so it under-counts when a
-    /// non-reporting battery also grid-charges (bounded residual).
+    /// Per-battery State-of-Charge over the last 24h (chart + chips), plus the
+    /// combined signed battery power per timestamp (kW; + = charging, − =
+    /// discharging) used to correct the chart's Solar line to panel-side PV.
     static func fetchBatteryHistory(siteId: Int, apiKey: String, now: Date = Date()) async throws
-        -> (series: [[HistorySeries.Point]], latestSoC: [Double],
-            todayChargeKWh: Double, todayDischargeKWh: Double, todayGridChargeKWh: Double)
+        -> (series: [[HistorySeries.Point]], latestSoC: [Double], combinedPowerKW: [HistorySeries.Point])
     {
         let start = now.addingTimeInterval(-24 * 3600)
         let url = build(path: "/site/\(siteId)/storageData", apiKey: apiKey, query: [
@@ -129,9 +112,7 @@ enum SolarEdgeAPI {
             let env: StorageDataEnvelope = try await get(url)
             var series: [[HistorySeries.Point]] = []
             var latest: [Double] = []
-            let sampleHours = 1.0 / 12.0   // 5-min telemetry
-            let todayStart = Calendar.current.startOfDay(for: now)
-            var chargeWh = 0.0, dischargeWh = 0.0, gridWh = 0.0
+            var combinedByT: [Date: Double] = [:]
             for batt in env.storageData.batteries {
                 let pts: [HistorySeries.Point] = batt.telemetries.compactMap { tel in
                     guard let soc = tel.stateOfCharge, let t = SolarEdgeDate.parse(tel.timeStamp)
@@ -141,17 +122,15 @@ enum SolarEdgeAPI {
                 series.append(pts)
                 if let last = pts.last { latest.append(last.v) }
                 for tel in batt.telemetries {
-                    guard let t = SolarEdgeDate.parse(tel.timeStamp), t >= todayStart else { continue }
-                    if let p = tel.power {
-                        if p > 0 { chargeWh += p * sampleHours }
-                        else if p < 0 { dischargeWh += -p * sampleHours }
-                    }
-                    gridWh += tel.acGridCharging ?? 0
+                    guard let t = SolarEdgeDate.parse(tel.timeStamp), let p = tel.power else { continue }
+                    combinedByT[t, default: 0] += p / 1000.0   // W → kW
                 }
             }
-            return (series, latest, chargeWh / 1000, dischargeWh / 1000, gridWh * 0.9 / 1000)
+            let combined = combinedByT.sorted { $0.key < $1.key }
+                .map { HistorySeries.Point(t: $0.key, v: $0.value) }
+            return (series, latest, combined)
         } catch SolarEdgeError.http(let code) where code == 400 || code == 404 {
-            return ([], [], 0, 0, 0)
+            return ([], [], [])
         }
     }
 

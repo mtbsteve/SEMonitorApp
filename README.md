@@ -36,57 +36,63 @@ testing without an API key.
 
 Per the SolarEdge Monitoring API spec (March 2026 revision):
 
-| Endpoint                      | Purpose                                              |
-|-------------------------------|------------------------------------------------------|
-| `/sites/list`                 | One-time site discovery from an Account key          |
-| `/site/{id}/energyDetails` (DAY)     | Today's authoritative Production / Consumption / FeedIn / Purchased totals |
-| `/site/{id}/energyDetails` (QUARTER) | 24h 15-min series for the Power chart         |
-| `/site/{id}/currentPowerFlow` | Live PV / grid / load power + aggregate battery SoC  |
-| `/site/{id}/storageData`      | 24h per-battery State-of-Charge + charge/discharge   |
+| Endpoint                          | Purpose                                              |
+|-----------------------------------|------------------------------------------------------|
+| `/sites/list`                     | One-time site discovery from an Account key          |
+| `/site/{id}/energyDetails` (DAY)  | Today's Production / Consumption / FeedIn totals (HA method) |
+| `/site/{id}/powerDetails`         | 24h 15-min series for the Power chart                |
+| `/site/{id}/currentPowerFlow`     | Live PV / grid / load power + aggregate battery SoC  |
+| `/site/{id}/storageData`          | 24h per-battery SoC + per-slot battery power         |
 
 Authentication is by `api_key` query parameter on every call, exactly as the
 spec mandates. The key is stored only in watchOS `UserDefaults` (App Group),
 and is sent only as the query parameter in HTTPS calls to
 `monitoringapi.solaredge.com`.
 
-## Energy accounting (DC-coupled batteries)
+## Energy accounting (DC-coupled batteries) — and an honest limitation
 
-On a DC-coupled SolarEdge Home Battery site, the API's meters are **AC-side**:
-`energyDetails.Production` is *inverter AC output*, so it **includes** battery
-discharge (battery→inverter→AC) and **excludes** PV that charged the battery
-DC-side. It therefore does **not** equal the SolarEdge portal's "Production",
-which is the **panel-side** figure (computed from per-optimizer DC data that
-the public API does not expose).
-
-So the app **reconstructs the panel-side values by energy balance**, using
-SolarEdge's own authoritative daily AC totals (`energyDetails` with
-`timeUnit=DAY`) plus the battery charge/discharge from `storageData`:
+The app shows SolarEdge's **own authoritative daily figures** directly, the
+same values the Home Assistant SolarEdge integration reads:
 
 ```
-Production  = AC_Production + (charge − discharge) − grid_charge
-Consumption = AC_Production + Purchased − FeedIn   − grid_charge
-Exported    = FeedIn                                  (grid-metered, exact)
-NOW power   = currentPowerFlow.PV.currentPower        (panel-side, direct)
+Production Today   = energyDetails (timeUnit=DAY) "Production"
+Consumption Today  = energyDetails (timeUnit=DAY) "Consumption"
+Exported Today     = energyDetails (timeUnit=DAY) "FeedIn"   (grid-metered, exact)
+NOW power          = currentPowerFlow.PV.currentPower         (panel-side, exact)
+Battery SoC        = storageData per-battery state-of-charge
 ```
 
-where `grid_charge` (battery charged *from the grid*, e.g. price-driven
-overnight top-ups — which is not solar) is the summed `ACGridCharging`
-telemetry × 0.9 (AC→DC).
+**Caveat for DC-coupled battery sites:** `energyDetails` Production and
+Consumption are **AC-side virtual meters**. On a site with DC-coupled
+SolarEdge Home Batteries they differ from the portal *dashboard* by
+battery-mediated amounts — Production includes battery→inverter discharge and
+misses PV that charged the battery DC-side. The gap is largest in the **early
+morning** (when overnight battery discharge dominates and production is tiny)
+and shrinks to within **~1%** as the day's production grows.
 
-These match the portal to rounding on normal days. The **one** residual: on
-this site only the first battery reports `ACGridCharging`, so on nights when a
-*second* battery also grid-charges, `grid_charge` under-counts and Production
-reads slightly high. That data simply isn't in the API — an exact match in
-that case isn't achievable without SolarEdge's optimizer-level telemetry.
+This is a hard limitation of the public Monitoring API: the portal computes
+its dashboard Production/Consumption from **per-optimizer DC and
+battery-internal telemetry that the `api_key` API does not expose**. We
+extensively tried reconstructing the panel-side values by energy balance
+(AC production ± battery charge/discharge ∓ grid charging) and could not make
+them reconcile to better than ~1 kWh, because the battery energies from
+`storageData` don't close against the AC meters and the portal. Showing
+SolarEdge's own daily meter values is therefore the closest defensible source.
 
-`NOW` power comes straight from `currentPowerFlow.PV`, which is already
-panel-side and reads 0 at night regardless of battery activity — no
-reconstruction needed.
+**NOW power, Exported, and Battery SoC are exact** against the portal — those
+come from `currentPowerFlow` and the grid meter, which aren't affected by the
+DC-coupling ambiguity.
+
+**The 24h Power chart's Solar line** is corrected to panel-side per 15-min
+slot (`powerDetails` Production + battery charge − grid-sourced charging), so
+it shows PV that charged the battery in the morning and sits at 0 at night.
+This is a visual reconstruction for the chart shape; the headline Production
+Today figure uses the `energyDetails` DAY value described above.
 
 ## Rate-limit accounting
 
 SolarEdge enforces **300 calls/day per account token**. The watch-app refresh
-fetches **4 endpoints** (`energyDetails`×2 + `currentPowerFlow` + `storageData`);
+fetches **4 endpoints** (`energyDetails` + `powerDetails` + `currentPowerFlow` + `storageData`);
 the complication's `getTimeline` fetches just **1** (`currentPowerFlow`, which
 carries both live PV and battery SoC). To avoid double-spending, the
 complication reuses the shared cache if it was updated within the last **12

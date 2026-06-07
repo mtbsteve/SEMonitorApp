@@ -71,41 +71,47 @@ final class SEStore: ObservableObject {
                 if let c = first.currency, !c.isEmpty { currency = c }
             }
 
-            // All values read directly from SolarEdge's own aggregation — the
-            // same sources the Home Assistant integration uses, which match
-            // the portal. No battery reconstruction:
-            //   • energyDetails (15-min) → 24h chart series + today's totals
-            //   • currentPowerFlow       → live PV / grid / load / battery SoC
-            //   • storageData            → 24h per-battery SoC for the chart
-            // Daily totals from timeUnit=DAY (authoritative, matches portal).
-            // Chart series from timeUnit=QUARTER (15-min shape). NOW from
-            // currentPowerFlow. Battery SoC from storageData.
+            // Data sources:
+            //   • energyDetails (DAY)   → today's totals (HA "Produced/Exported
+            //                             Energy" method: meter values[0])
+            //   • powerDetails (15-min) → 24h chart series
+            //   • currentPowerFlow      → live PV (panel-side, exact)
+            //   • storageData           → battery SoC + per-slot battery power
             async let energyDay = SolarEdgeAPI.fetchEnergyToday(siteId: siteId, apiKey: apiKey)
-            async let energyHist = SolarEdgeAPI.fetchEnergyHistory(siteId: siteId, apiKey: apiKey)
+            async let power = SolarEdgeAPI.fetchPowerHistory(siteId: siteId, apiKey: apiKey)
             async let flow = SolarEdgeAPI.fetchPowerFlow(siteId: siteId, apiKey: apiKey)
             async let battery = SolarEdgeAPI.fetchBatteryHistory(siteId: siteId, apiKey: apiKey)
-            let (day, e, f, b) = try await (energyDay, energyHist, flow, battery)
+            let (day, p, f, b) = try await (energyDay, power, flow, battery)
 
-            // energyDetails "Production"/"Consumption" are AC-side: on this
-            // DC-coupled battery site Production includes battery discharge and
-            // misses PV that charged the battery, so it does NOT equal the
-            // portal's panel-side figure. Reconstruct via energy balance:
-            //   Production  = AC_Production + (charge − discharge) − grid_charge
-            //   Consumption = AC_Production + Purchased − FeedIn − grid_charge
-            // Both are exact when no grid charging occurred; on grid-charge
-            // nights they carry a bounded residual (Battery 2 never reports
-            // ACGridCharging). Exported (FeedIn) is grid-metered and exact.
-            let acProd = day["Production"] ?? 0
-            let purchased = day["Purchased"] ?? 0
+            // Today's totals = SolarEdge's own daily meters via energyDetails
+            // timeUnit=DAY, read directly — identical to the Home Assistant
+            // SolarEdge integration's "Produced Energy" (Production) and
+            // "Exported Energy" (FeedIn) sensors.
+            let production = day["Production"] ?? 0
+            let consumption = day["Consumption"] ?? 0
             let exported = day["FeedIn"] ?? 0
-            let gridCharge = b.todayGridChargeKWh
-            let netBattery = b.todayChargeKWh - b.todayDischargeKWh
 
-            let production = max(0, acProd + netBattery - gridCharge)
-            let consumption = max(0, acProd + purchased - exported - gridCharge)
+            // Chart's Solar line corrected to panel-side PV per 15-min slot:
+            // AC Production + signed battery power − grid-sourced charging.
+            // This restores the morning production (PV that charged the battery
+            // DC-side, which the raw AC Production meter misses) and zeroes the
+            // line at night (battery discharge cancelled). Same approach that
+            // previously rendered correctly.
+            let sampleHours = 1.0 / 12.0, slotHours = 0.25
+            var gridByT: [Date: Double] = [:]
+            for pt in p.grid { gridByT[pt.t] = pt.v }
+            let correctedSolar: [HistorySeries.Point] = p.solar.map { sample in
+                let slotEnd = sample.t.addingTimeInterval(15 * 60)
+                let sumKW = b.combinedPowerKW.filter { $0.t >= sample.t && $0.t < slotEnd }
+                    .map(\.v).reduce(0, +)
+                let batteryKW = sumKW * sampleHours / slotHours
+                let chargeDC = max(0, batteryKW)
+                let gridChargeKW = min(chargeDC, max(0, gridByT[sample.t] ?? 0))
+                return HistorySeries.Point(t: sample.t, v: max(0, sample.v + batteryKW - gridChargeKW))
+            }
 
             // Current PV power straight from the power-flow PV node — panel-side,
-            // inherently excludes grid charging, reads 0 at night.
+            // inherently excludes grid charging, reads 0 at night. Exact.
             let currentPower = f.pvKW ?? 0
 
             let snap = Snapshot(
@@ -120,16 +126,11 @@ final class SEStore: ObservableObject {
                 batterySoC: b.latestSoC,
                 fetchedAt: Date()
             )
-            #if DEBUG
-            print(String(format: "☀️ Production=%.2f, Consumption=%.2f, Exported=%.2f kWh | NOW PV=%.2f kW",
-                         production, consumption, exported, max(0, currentPower)))
-            #endif
-
             self.snapshot = snap
             self.history = HistorySeries(
-                solar: e.solar,
-                consumption: e.consumption,
-                grid: e.grid,
+                solar: correctedSolar,
+                consumption: p.consumption,
+                grid: p.grid,
                 batteries: b.series
             )
             self.lastUpdated = Date()
