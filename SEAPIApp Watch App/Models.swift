@@ -125,6 +125,27 @@ struct PowerDetails: Decodable {
     }
 }
 
+/// energyDetails has the same shape as powerDetails (meters → values), just
+/// with energy (Wh) instead of power (W). Reuse PowerDetails for decoding.
+struct EnergyDetailsEnvelope: Decodable {
+    let energyDetails: PowerDetails
+}
+
+struct PowerFlowEnvelope: Decodable {
+    let siteCurrentPowerFlow: Flow
+    struct Flow: Decodable {
+        let unit: String?
+        let PV: Element?
+        let STORAGE: Element?
+        let GRID: Element?
+        let LOAD: Element?
+        struct Element: Decodable {
+            let currentPower: Double?
+            let chargeLevel: Double?
+        }
+    }
+}
+
 struct StorageDataEnvelope: Decodable {
     let storageData: StorageData
 }
@@ -181,13 +202,15 @@ struct Snapshot: Codable, Equatable {
     var siteId: Int
     var siteName: String
     var currency: String
-    /// Current PV / production power in kW.
+    /// Current PV power in kW (currentPowerFlow.PV — panel-side).
     var currentPowerKW: Double?
-    /// Today's PV production in kWh (AC inverter output + net battery delta).
+    /// Today's PV production in kWh (energyDetails Production).
     var todayEnergyKWh: Double?
-    /// Today's energy exported to grid in kWh, integrated from /powerDetails.FeedIn.
+    /// Today's energy exported to grid in kWh (energyDetails FeedIn).
     var todayExportedKWh: Double?
-    /// Lifetime energy in kWh (kept for cached-data compatibility; not shown).
+    /// Today's house consumption in kWh (energyDetails Consumption).
+    var todayConsumptionKWh: Double?
+    /// Lifetime energy in kWh (no longer populated; kept for cache compatibility).
     var lifetimeEnergyKWh: Double?
     /// Per-battery state-of-charge percentages (0…100) at the most recent telemetry.
     var batterySoC: [Double]
@@ -200,6 +223,7 @@ struct Snapshot: Codable, Equatable {
         currentPowerKW: nil,
         todayEnergyKWh: nil,
         todayExportedKWh: nil,
+        todayConsumptionKWh: nil,
         lifetimeEnergyKWh: nil,
         batterySoC: [],
         fetchedAt: .distantPast

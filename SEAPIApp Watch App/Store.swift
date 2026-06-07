@@ -71,118 +71,65 @@ final class SEStore: ObservableObject {
                 if let c = first.currency, !c.isEmpty { currency = c }
             }
 
-            async let overview = SolarEdgeAPI.fetchOverview(siteId: siteId, apiKey: apiKey)
-            async let power = SolarEdgeAPI.fetchPowerHistory(siteId: siteId, apiKey: apiKey)
+            // All values read directly from SolarEdge's own aggregation — the
+            // same sources the Home Assistant integration uses, which match
+            // the portal. No battery reconstruction:
+            //   • energyDetails (15-min) → 24h chart series + today's totals
+            //   • currentPowerFlow       → live PV / grid / load / battery SoC
+            //   • storageData            → 24h per-battery SoC for the chart
+            // Daily totals from timeUnit=DAY (authoritative, matches portal).
+            // Chart series from timeUnit=QUARTER (15-min shape). NOW from
+            // currentPowerFlow. Battery SoC from storageData.
+            async let energyDay = SolarEdgeAPI.fetchEnergyToday(siteId: siteId, apiKey: apiKey)
+            async let energyHist = SolarEdgeAPI.fetchEnergyHistory(siteId: siteId, apiKey: apiKey)
+            async let flow = SolarEdgeAPI.fetchPowerFlow(siteId: siteId, apiKey: apiKey)
             async let battery = SolarEdgeAPI.fetchBatteryHistory(siteId: siteId, apiKey: apiKey)
+            let (day, e, f, b) = try await (energyDay, energyHist, flow, battery)
 
-            let (ov, p, b) = try await (overview, power, battery)
+            // energyDetails "Production"/"Consumption" are AC-side: on this
+            // DC-coupled battery site Production includes battery discharge and
+            // misses PV that charged the battery, so it does NOT equal the
+            // portal's panel-side figure. Reconstruct via energy balance:
+            //   Production  = AC_Production + (charge − discharge) − grid_charge
+            //   Consumption = AC_Production + Purchased − FeedIn − grid_charge
+            // Both are exact when no grid charging occurred; on grid-charge
+            // nights they carry a bounded residual (Battery 2 never reports
+            // ACGridCharging). Exported (FeedIn) is grid-metered and exact.
+            let acProd = day["Production"] ?? 0
+            let purchased = day["Purchased"] ?? 0
+            let exported = day["FeedIn"] ?? 0
+            let gridCharge = b.todayGridChargeKWh
+            let netBattery = b.todayChargeKWh - b.todayDischargeKWh
 
-            let todayStart = Calendar.current.startOfDay(for: Date())
+            let production = max(0, acProd + netBattery - gridCharge)
+            let consumption = max(0, acProd + purchased - exported - gridCharge)
 
-            // Panel-side PV correction. /powerDetails.Production is AC inverter
-            // output only — it (a) misses DC PV that charged the batteries and
-            // (b) wrongly includes battery→AC discharge as if it were PV. The
-            // base correction is to add the signed battery power per slot:
-            // charging adds back the DC bypass, discharging cancels the
-            // battery's AC contribution.
-            //
-            // BUT when the battery charges *from the grid* (price-driven
-            // top-ups), that charge is NOT solar and must not be added. The
-            // SolarEdge `ACGridCharging` telemetry field is unreliable here
-            // (on multi-battery sites only the first battery populates it), so
-            // we detect grid charging from the reliable aggregate meters
-            // instead: the site is importing exactly when net grid = Purchased
-            // − FeedIn (= `p.grid`) is positive. The grid-sourced share of the
-            // slot's battery charge is therefore:
-            //     grid_charge = clamp(netGridImport, 0, batteryChargeDC)
-            // and the panel-side PV for the slot is:
-            //     PV = AC_Production + batterySigned − grid_charge
-            // Examples:
-            //   - night, both batteries grid-charging: AC≈0, batt=+2, import≈+2.2
-            //         → grid_charge=2 → PV = 0+2−2 = 0  ✓ (no sun)
-            //   - midday PV charge while exporting: import<0 → grid_charge=0
-            //         → full PV credit  ✓
-            //   - discharge slot: chargeDC=0 → grid_charge=0 → discharge still
-            //         subtracted  ✓
-            //
-            // Battery samples (5-min, possibly staggered across batteries) are
-            // aggregated into each 15-min Production slot: sum × (5/60) ÷ 0.25.
-            let sampleHours = 1.0 / 12.0
-            let slotHours = 0.25
-            var gridByT: [Date: Double] = [:]
-            for pt in p.grid { gridByT[pt.t] = pt.v }
-            let correctedSolar: [HistorySeries.Point] = p.solar.map { sample in
-                let slotEnd = sample.t.addingTimeInterval(15 * 60)
-                let inSlot = b.combinedPowerKW.filter { $0.t >= sample.t && $0.t < slotEnd }
-                let sumKW = inSlot.map(\.v).reduce(0, +)
-                let batterySignedKW = sumKW * sampleHours / slotHours
-                let chargeDC = max(0, batterySignedKW)
-                let netImport = max(0, gridByT[sample.t] ?? 0)
-                let gridChargeKW = min(chargeDC, netImport)
-                let pv = sample.v + batterySignedKW - gridChargeKW
-                return HistorySeries.Point(t: sample.t, v: max(0, pv))
-            }
+            // Current PV power straight from the power-flow PV node — panel-side,
+            // inherently excludes grid charging, reads 0 at night.
+            let currentPower = f.pvKW ?? 0
 
-            // Production Today = integral of the corrected (panel-side) PV
-            // since midnight. Ties the header number exactly to the Solar
-            // chart. Fall back to the Overview aggregate only if powerDetails
-            // returned nothing for today yet.
-            let todayPV = correctedSolar.filter { $0.t >= todayStart }
-                .reduce(0.0) { $0 + $1.v * 0.25 }
-            let todayProduction = todayPV > 0 ? todayPV : ov.lastDayData.energy / 1000.0
-
-            // Today's grid export, integrated from /powerDetails.FeedIn.
-            // Shown instead of "Consumption" because the SE API's Consumption
-            // meter under-reports on DC-coupled battery sites, while FeedIn is
-            // exact and useful.
-            let todayExported = p.feedIn.filter { $0.t >= todayStart }
-                .reduce(0.0) { $0 + $1.v * 0.25 }
-
-            // Current panel-side PV: same correction applied to the latest
-            // instant. /overview.currentPower is AC inverter output; add the
-            // latest battery power, then subtract any grid-sourced charging
-            // (latest net import clamped to the charge). At night with the
-            // battery grid-charging this correctly reads 0 (no sun).
-            let currentACkW = ov.currentPower.power / 1000.0
-            let latestBatteryKW = b.combinedPowerKW.last?.v ?? 0
-            let currentNetImport = max(0, p.grid.last?.v ?? 0)
-            let currentGridChargeKW = min(max(0, latestBatteryKW), currentNetImport)
-            let currentPower = max(0, currentACkW + latestBatteryKW - currentGridChargeKW)
-
-            // Build snapshot
             let snap = Snapshot(
                 siteId: siteId,
                 siteName: siteName.isEmpty ? "Site \(siteId)" : siteName,
                 currency: currency,
-                currentPowerKW: currentPower,
-                todayEnergyKWh: todayProduction,
-                todayExportedKWh: todayExported > 0 ? todayExported : nil,
-                lifetimeEnergyKWh: ov.lifeTimeData.energy / 1000.0,
+                currentPowerKW: max(0, currentPower),
+                todayEnergyKWh: production,
+                todayExportedKWh: exported > 0 ? exported : nil,
+                todayConsumptionKWh: consumption > 0 ? consumption : nil,
+                lifetimeEnergyKWh: nil,
                 batterySoC: b.latestSoC,
                 fetchedAt: Date()
             )
             #if DEBUG
-            let acToday = p.solar.filter { $0.t >= todayStart }
-                .reduce(0.0) { $0 + $1.v * 0.25 }
-            // Today's grid-sourced battery charge, computed the same way the
-            // correction does (clamp of net import to battery charge per slot).
-            let gridChargeToday: Double = p.solar.filter { $0.t >= todayStart }.reduce(0.0) { acc, sample in
-                let slotEnd = sample.t.addingTimeInterval(15 * 60)
-                let sumKW = b.combinedPowerKW.filter { $0.t >= sample.t && $0.t < slotEnd }
-                    .map(\.v).reduce(0, +)
-                let chargeDC = max(0, sumKW * sampleHours / slotHours)
-                let netImport = max(0, gridByT[sample.t] ?? 0)
-                return acc + min(chargeDC, netImport) * 0.25
-            }
-            print(String(format: "☀️ today PV: AC-only=%.2f, panel-side=%.2f kWh | battery net=%+.2f, grid-charge=%.2f kWh → shown=%.2f",
-                         acToday, todayPV, b.todayNetChargeKWh, gridChargeToday, todayProduction))
+            print(String(format: "☀️ Production=%.2f, Consumption=%.2f, Exported=%.2f kWh | NOW PV=%.2f kW",
+                         production, consumption, exported, max(0, currentPower)))
             #endif
 
             self.snapshot = snap
             self.history = HistorySeries(
-                solar: correctedSolar,
-                consumption: p.consumption,
-                grid: p.grid,
+                solar: e.solar,
+                consumption: e.consumption,
+                grid: e.grid,
                 batteries: b.series
             )
             self.lastUpdated = Date()
