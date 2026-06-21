@@ -1,5 +1,28 @@
 import SwiftUI
 
+/// Shared refresh button used identically on all three screens — white,
+/// consistent size, spins while loading, with trailing padding so it clears
+/// the scroll / page indicator on the right edge.
+struct RefreshButton: View {
+    @EnvironmentObject var store: SEStore
+
+    var body: some View {
+        Button {
+            Task { await store.refresh() }
+        } label: {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white)
+                .rotationEffect(.degrees(store.isLoading ? 360 : 0))
+                .animation(store.isLoading ? .linear(duration: 1).repeatForever(autoreverses: false) : .default,
+                           value: store.isLoading)
+        }
+        .buttonStyle(.plain)
+        .disabled(store.isLoading)
+        .padding(.trailing, 8)
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject var store: SEStore
 

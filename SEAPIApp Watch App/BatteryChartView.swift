@@ -19,20 +19,15 @@ struct BatteryChartView: View {
         // attribution footer (required by SolarEdge's display guidelines).
         ScrollView {
             VStack(alignment: .leading, spacing: 2) {
-                Text("SE Monitor")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                HStack {
-                    Text("Battery SoC — 24h (%)")
-                        .font(.caption2).foregroundStyle(.secondary)
-                    Spacer()
-                    Button { Task { await store.refresh() } } label: {
-                        Image(systemName: "arrow.clockwise").font(.caption2)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(store.isLoading)
+                ZStack {
+                    Text("SE Monitor")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                    HStack { Spacer(); RefreshButton() }
                 }
+                Text("Battery SoC — 24h (%)")
+                    .font(.caption2).foregroundStyle(.secondary)
 
                 if configuredSlots.isEmpty {
                     ContentUnavailableView("No battery data", systemImage: "battery.25")

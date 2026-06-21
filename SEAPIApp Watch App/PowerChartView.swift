@@ -28,20 +28,15 @@ struct PowerChartView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("SE Monitor")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity, alignment: .center)
-            HStack {
-                Text("Power — 24h (kW)")
-                    .font(.caption2).foregroundStyle(.secondary)
-                Spacer()
-                Button { Task { await store.refresh() } } label: {
-                    Image(systemName: "arrow.clockwise").font(.caption2)
-                }
-                .buttonStyle(.plain)
-                .disabled(store.isLoading)
+            ZStack {
+                Text("SE Monitor")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                HStack { Spacer(); RefreshButton() }
             }
+            Text("Power — 24h (kW)")
+                .font(.caption2).foregroundStyle(.secondary)
 
             if solarPoints.isEmpty && consumptionPoints.isEmpty && gridPoints.isEmpty {
                 ContentUnavailableView("No history", systemImage: "chart.xyaxis.line")
