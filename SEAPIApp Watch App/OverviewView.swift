@@ -54,17 +54,7 @@ struct OverviewView: View {
                     .lineLimit(1)
             }
             Spacer()
-            Button {
-                Task { await store.refresh() }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 11))
-                    .foregroundColor(.blue)
-                    .rotationEffect(.degrees(store.isLoading ? 360 : 0))
-                    .animation(store.isLoading ? .linear(duration: 1).repeatForever(autoreverses: false) : .default,
-                               value: store.isLoading)
-            }
-            .buttonStyle(.plain)
+            RefreshButton()
         }
     }
 
