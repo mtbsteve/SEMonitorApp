@@ -144,6 +144,7 @@ struct StorageData: Decodable {
         let timeStamp: String
         let stateOfCharge: Double?
         let power: Double?
+        let acGridCharging: Double?   // Wh of grid energy used to charge (AC)
 
         /// SolarEdge docs say the SoC field is `stateOfCharge`, but the live API
         /// for SolarEdge Home Battery sites returns `batteryPercentageState`.
@@ -154,10 +155,12 @@ struct StorageData: Decodable {
             self.stateOfCharge = (try? c.decode(Double.self, forKey: .stateOfCharge))
                 ?? (try? c.decode(Double.self, forKey: .batteryPercentageState))
             self.power = try? c.decode(Double.self, forKey: .power)
+            self.acGridCharging = try? c.decode(Double.self, forKey: .acGridCharging)
         }
 
         private enum CodingKeys: String, CodingKey {
             case timeStamp, stateOfCharge, batteryPercentageState, power
+            case acGridCharging = "ACGridCharging"
         }
     }
 }

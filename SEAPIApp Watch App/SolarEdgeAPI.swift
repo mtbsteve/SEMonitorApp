@@ -101,7 +101,8 @@ enum SolarEdgeAPI {
     /// combined signed battery power per timestamp (kW; + = charging, − =
     /// discharging) used to correct the chart's Solar line to panel-side PV.
     static func fetchBatteryHistory(siteId: Int, apiKey: String, now: Date = Date()) async throws
-        -> (series: [[HistorySeries.Point]], latestSoC: [Double], combinedPowerKW: [HistorySeries.Point])
+        -> (series: [[HistorySeries.Point]], latestSoC: [Double], combinedPowerKW: [HistorySeries.Point],
+            todayChargeKWh: Double, todayDischargeKWh: Double, todayGridChargeKWh: Double)
     {
         let start = now.addingTimeInterval(-24 * 3600)
         let url = build(path: "/site/\(siteId)/storageData", apiKey: apiKey, query: [
@@ -113,6 +114,9 @@ enum SolarEdgeAPI {
             var series: [[HistorySeries.Point]] = []
             var latest: [Double] = []
             var combinedByT: [Date: Double] = [:]
+            let sampleHours = 1.0 / 12.0
+            let todayStart = Calendar.current.startOfDay(for: now)
+            var chargeWh = 0.0, dischargeWh = 0.0, gridWh = 0.0
             for batt in env.storageData.batteries {
                 let pts: [HistorySeries.Point] = batt.telemetries.compactMap { tel in
                     guard let soc = tel.stateOfCharge, let t = SolarEdgeDate.parse(tel.timeStamp)
@@ -124,13 +128,17 @@ enum SolarEdgeAPI {
                 for tel in batt.telemetries {
                     guard let t = SolarEdgeDate.parse(tel.timeStamp), let p = tel.power else { continue }
                     combinedByT[t, default: 0] += p / 1000.0   // W → kW
+                    if t >= todayStart {
+                        if p > 0 { chargeWh += p * sampleHours } else if p < 0 { dischargeWh += -p * sampleHours }
+                        gridWh += tel.acGridCharging ?? 0
+                    }
                 }
             }
             let combined = combinedByT.sorted { $0.key < $1.key }
                 .map { HistorySeries.Point(t: $0.key, v: $0.value) }
-            return (series, latest, combined)
+            return (series, latest, combined, chargeWh / 1000, dischargeWh / 1000, gridWh * 0.9 / 1000)
         } catch SolarEdgeError.http(let code) where code == 400 || code == 404 {
-            return ([], [], [])
+            return ([], [], [], 0, 0, 0)
         }
     }
 
