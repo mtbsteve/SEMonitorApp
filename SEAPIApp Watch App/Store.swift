@@ -87,9 +87,23 @@ final class SEStore: ObservableObject {
             // timeUnit=DAY, read directly — identical to the Home Assistant
             // SolarEdge integration's "Produced Energy" (Production) and
             // "Exported Energy" (FeedIn) sensors.
-            let production = day["Production"] ?? 0
-            let consumption = day["Consumption"] ?? 0
+            // Panel-side reconstruction by energy balance. The AC meters
+            // (energyDetails) under-report Production on a DC-coupled battery
+            // site because PV that charges the battery DC-side never reaches
+            // the AC inverter, and they over-count it by the battery discharge
+            // that does pass through. Correcting both — and removing any
+            // grid-sourced charging — recovers the portal's panel-side figure:
+            //   Production  = AC_Production + charge − discharge − grid_charge
+            //   Consumption = AC_Production + Purchased − FeedIn − grid_charge
+            // Validated against the portal within ~1 kWh. (grid_charge from
+            // ACGridCharging; only the first battery reports it, so on nights
+            // a second battery also grid-charges this carries a small residual.)
+            let acProd = day["Production"] ?? 0
+            let purchased = day["Purchased"] ?? 0
             let exported = day["FeedIn"] ?? 0
+            let gridCharge = b.todayGridChargeKWh
+            let production = max(0, acProd + b.todayChargeKWh - b.todayDischargeKWh - gridCharge)
+            let consumption = max(0, acProd + purchased - exported - gridCharge)
 
             // Chart's Solar line corrected to panel-side PV per 15-min slot:
             // AC Production + signed battery power − grid-sourced charging.

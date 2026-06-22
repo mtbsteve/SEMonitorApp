@@ -49,38 +49,47 @@ spec mandates. The key is stored only in watchOS `UserDefaults` (App Group),
 and is sent only as the query parameter in HTTPS calls to
 `monitoringapi.solaredge.com`.
 
-## Energy accounting (DC-coupled batteries) — and an honest limitation
+## Energy accounting (DC-coupled batteries)
 
-The app shows SolarEdge's **own authoritative daily figures** directly, the
-same values the Home Assistant SolarEdge integration reads:
+On a DC-coupled SolarEdge Home Battery site the API's energy meters are
+**AC-side**: `energyDetails` Production *misses* PV that charged the battery
+DC-side (it never reaches the inverter) and *includes* battery discharge that
+does. So it under-reports the portal's panel-side "Production" by the amount
+of PV that went into the battery. The app corrects this by **energy balance**,
+combining the AC meters (`energyDetails` timeUnit=DAY) with the battery
+charge/discharge from `storageData`:
 
 ```
-Production Today   = energyDetails (timeUnit=DAY) "Production"
-Consumption Today  = energyDetails (timeUnit=DAY) "Consumption"
-Exported Today     = energyDetails (timeUnit=DAY) "FeedIn"   (grid-metered, exact)
+Production Today   = AC_Production + charge − discharge − grid_charge
+Consumption Today  = AC_Production + Purchased − FeedIn − grid_charge
+Exported Today     = FeedIn                                  (grid-metered, exact)
 NOW power          = currentPowerFlow.PV.currentPower         (panel-side, exact)
 Battery SoC        = storageData per-battery state-of-charge
 ```
 
-**Caveat for DC-coupled battery sites:** `energyDetails` Production and
-Consumption are **AC-side virtual meters**. On a site with DC-coupled
-SolarEdge Home Batteries they differ from the portal *dashboard* by
-battery-mediated amounts — Production includes battery→inverter discharge and
-misses PV that charged the battery DC-side. The gap is largest in the **early
-morning** (when overnight battery discharge dominates and production is tiny)
-and shrinks to within **~1%** as the day's production grows.
+- **`charge` / `discharge`** — today's battery charge/discharge energy
+  (`storageData`). Charge is PV that bypassed the AC bus (added back);
+  discharge is battery output the AC meter mistook for PV (removed).
+- **`grid_charge`** — battery energy that came *from the grid* (e.g.
+  price-driven overnight top-ups), which is not solar. Taken from the
+  `ACGridCharging` telemetry × 0.9 (AC→DC).
 
-This is a hard limitation of the public Monitoring API: the portal computes
-its dashboard Production/Consumption from **per-optimizer DC and
-battery-internal telemetry that the `api_key` API does not expose**. We
-extensively tried reconstructing the panel-side values by energy balance
-(AC production ± battery charge/discharge ∓ grid charging) and could not make
-them reconcile to better than ~1 kWh, because the battery energies from
-`storageData` don't close against the AC meters and the portal. Showing
-SolarEdge's own daily meter values is therefore the closest defensible source.
+Validated against the SolarEdge portal. **Known residual:** Production Today
+runs a stable **~2 kWh (≈3% on a ~55 kWh day) under** the portal. This is
+battery **round-trip / inverter efficiency**: the app subtracts the full DC
+discharge and adds the DC charge, but the AC `Production` meter only ever saw
+the post-conversion (lossy) values — so the reconstruction sits slightly low
+by a roughly constant amount through the day. We deliberately do **not** apply
+an efficiency fudge factor, since the true loss varies with battery usage and
+a fixed factor would over-fit one site. Grid charging itself is handled
+correctly (Production reads 0 overnight during grid charging, matching the
+portal). A secondary, smaller residual: only the **first** battery reports
+`ACGridCharging`, so on nights a *second* battery also grid-charges from the
+grid, the grid term under-counts — that per-battery grid data isn't exposed by
+the public API.
 
-**NOW power, Exported, and Battery SoC are exact** against the portal — those
-come from `currentPowerFlow` and the grid meter, which aren't affected by the
+**NOW power, Exported, and Battery SoC are exact** — `currentPowerFlow.PV` is
+already panel-side and the grid meter is exact, so neither is affected by the
 DC-coupling ambiguity.
 
 **The 24h Power chart's Solar line** is corrected to panel-side per 15-min
