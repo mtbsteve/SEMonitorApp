@@ -208,6 +208,32 @@ exploration, run a second consent flow and keep the two configs separate (note
 the free tier allows only one registered *application*, but a grant is
 per-authorization).
 
+### One seed, one install
+
+The same rule bites between *installs of the same build*. A build carries
+exactly one seed refresh token. The Simulator and a real watch are separate
+installs with separate App Group storage but the **same** baked-in seed, so
+whichever runs first spends it and the other is dead on arrival with
+"Authorization expired".
+
+The Simulator therefore reports itself as **not configured** and falls through
+to Demo mode; `SEConfig.isSimulator` gates this, and `SETokenStore` refuses to
+refresh there as well. Live data on the Simulator is not worth costing the
+watch its grant.
+
+**Recovering without a browser round-trip.** If an install has already spent
+the seed, the live token is sitting in *that* install's storage. For a
+Simulator, read it out and hand it back to the script rather than re-running
+consent:
+
+```bash
+plutil -extract se_refresh_token raw ~/Library/Developer/CoreSimulator/Devices/<DEVICE-UDID>/data/Containers/Shared/AppGroup/<GROUP-UUID>/Library/Preferences/group.com.mtbsteve.semonitor.plist
+```
+
+Put that value in `SE_REFRESH_TOKEN` in `~/.config/semonitor/se-api.env`, then
+`tools/se-token.sh xcconfig > Secrets.xcconfig` — it verifies and rotates
+before emitting, so a stale value fails loudly instead of being baked in.
+
 **2. Refreshes must be serialized.** `SETokenStore` is an `actor` with explicit
 single-flight coalescing. An actor alone is not enough: every `await` is a
 suspension point where a second caller can enter, so two callers could each
@@ -367,6 +393,7 @@ set to `27.2` and is what `LastUpgradeCheck` is generated from.
 |---|---|
 | **"Authorization expired"** | The refresh token is spent or past its 14-day idle life. Re-run steps 2–3 (`authorize` → `exchange` → `xcconfig`), then rebuild. Only browser consent on a Mac can fix this. |
 | **"No SolarEdge credentials in this build"** | The `SE*` keys are missing from the built `Info.plist`. Confirm `Secrets.xcconfig` exists and was present when you ran `xcodegen`. |
+| **"Simulator: live data is disabled."** | By design, not a fault — see [One seed, one install](#one-seed-one-install). Use Demo mode in the Simulator. |
 | **"Daily API budget used. Showing cached data."** | `CreditBudget` stopped you at 48 calls. Resets at local midnight. |
 | **"Rate limit hit. Try again in a minute."** | More than 10 calls/minute. |
 | **"Monthly API credit limit reached."** | The 2,000-credit wall. No overage on free — it clears only at the billing-cycle reset. |

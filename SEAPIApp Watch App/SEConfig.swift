@@ -29,11 +29,36 @@ enum SEConfig {
     static var siteID: Int { Int(info("SESiteID")) ?? 0 }
 
     /// True when the build carries a usable grant. A placeholder xcconfig
-    /// (`your_client_id_here`, `SE_SITE_ID = 0`) deliberately fails this.
+    /// (`your_client_id_here`, `SE_SITE_ID = 0`) deliberately fails this, and
+    /// so does running in the Simulator — see `isSimulator`.
     static var isConfigured: Bool {
-        !clientID.isEmpty && !clientID.hasPrefix("your_")
+        !isSimulator
+            && !clientID.isEmpty && !clientID.hasPrefix("your_")
             && !clientSecret.isEmpty && !clientSecret.hasPrefix("your_")
             && siteID != 0
+    }
+
+    /// The Simulator must never touch the OAuth grant.
+    ///
+    /// A build carries exactly ONE seed refresh token, and SolarEdge kills it
+    /// the instant it is used: the first refresh rotates it and the old value
+    /// dies server-side immediately. The Simulator and a real watch are
+    /// separate installs with separate App Group storage but the *same* baked-in
+    /// seed — so whichever runs first consumes the grant, and the other lands on
+    /// "Authorization expired" with no way back except re-provisioning from the
+    /// Mac.
+    ///
+    /// That is not hypothetical: on 2026-11-05 a Simulator run rotated the seed,
+    /// and the watch build installed minutes later was already dead on arrival.
+    /// Live data in the Simulator is not worth costing the watch its grant, so
+    /// the Simulator reports "not configured" and falls through to Demo mode,
+    /// which needs no credentials and makes no network calls.
+    static var isSimulator: Bool {
+        #if targetEnvironment(simulator)
+        return true
+        #else
+        return false
+        #endif
     }
 }
 

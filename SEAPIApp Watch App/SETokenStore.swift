@@ -117,6 +117,12 @@ actor SETokenStore {
     // MARK: - Refresh
 
     private func performRefresh() async throws -> String {
+        // Defence in depth. SEConfig.isConfigured is already false in the
+        // Simulator, so this should be unreachable — but a single stray refresh
+        // permanently destroys the grant for the real watch, and that is too
+        // expensive to leave to every caller having checked first.
+        guard !SEConfig.isSimulator else { throw SolarEdgeError.notConfigured }
+
         guard SEConfig.isConfigured else { throw SolarEdgeError.notConfigured }
 
         let refreshToken = currentRefreshToken

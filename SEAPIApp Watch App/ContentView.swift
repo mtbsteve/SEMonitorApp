@@ -81,11 +81,17 @@ struct SetupView: View {
                 Text("SE Monitor")
                     .font(.system(size: 14, weight: .bold))
 
-                Text("No SolarEdge credentials in this build.")
+                // The Simulator is deliberately never "configured", so it must
+                // not be told to go and fix its credentials — they are fine.
+                Text(SEConfig.isSimulator
+                     ? "Simulator: live data is disabled."
+                     : "No SolarEdge credentials in this build.")
                     .font(.system(size: 10, weight: .medium))
                     .multilineTextAlignment(.center)
 
-                Text("Copy Secrets.xcconfig.example to Secrets.xcconfig, run tools/se-token.sh to authorize your site, then rebuild. See the README.")
+                Text(SEConfig.isSimulator
+                     ? "A build has one single-use refresh token. Letting the Simulator spend it would break the grant on your watch, so use Demo mode here."
+                     : "Copy Secrets.xcconfig.example to Secrets.xcconfig, run tools/se-token.sh to authorize your site, then rebuild. See the README.")
                     .font(.system(size: 9))
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
