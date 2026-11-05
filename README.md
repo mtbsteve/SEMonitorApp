@@ -250,8 +250,8 @@ and rebuild" is therefore a dependable recovery path.
 ### 2. Mint a grant
 
 ```bash
-git clone https://github.com/mtbsteve/SEAPIApp.git
-cd SEAPIApp
+git clone https://github.com/mtbsteve/SEMonitorApp.git
+cd SEMonitorApp
 install -m 700 tools/se-token.sh ~/bin/se-token.sh   # or run it in place
 ```
 
