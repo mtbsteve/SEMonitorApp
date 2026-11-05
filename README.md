@@ -37,7 +37,7 @@ carry **my** secret and grant every installer access to **my** site, or need a
 server I'm not going to run for a hobby project. So v2.0.0 has **no
 user-enterable credential**: you register your own SolarEdge application, mint
 your own grant, and build the app for your own watch. The v1.0.0 App Store listing
-is being withdrawn, since the API it depends on no longer exists.
+was removed on **2026-11-05**, since the API it depends on no longer exists.
 
 If you own a SolarEdge site, a Mac, and a paid Apple Developer account, the
 [Build your own](#build-your-own) section gets you there in about 30 minutes.
@@ -500,4 +500,4 @@ with nothing in the logs.
 |---|---|
 | **2.0.0** | v2 API rewrite. Personal build only — no user-enterable credential. |
 | 1.1 | Developed, never shipped: the v1 API shut down before submission. |
-| 1.0.0 (build 2) | First public App Store release, 2026-05-31. Non-functional since the v1 API shut down on 2026-11-03; listing being withdrawn. |
+| 1.0.0 (build 2) | First public App Store release, 2026-05-31. Non-functional since the v1 API shut down on 2026-11-03; listing removed from the App Store on 2026-11-05. |
