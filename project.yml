@@ -53,7 +53,12 @@ schemes:
       targets:
         SEAPIApp Watch App: all
     run:
-      config: Debug
+      # Release, not Debug: this is the scheme that installs the build worn
+      # daily, and ⌘R with config: Debug leaves an unoptimized binary on the
+      # watch. There is no debug-only logging in the sources (no #if DEBUG
+      # anywhere), so Debug buys nothing here. Switch back temporarily if you
+      # ever need the debugger or Instruments.
+      config: Release
     archive:
       config: Release
   # Archive this one for App Store / TestFlight distribution — it embeds the
