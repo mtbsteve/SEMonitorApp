@@ -13,8 +13,15 @@ All information about your PV system comes from the official SolarEdge
 Monitoring system. Please review the API terms at
 <https://monitoring.solaredge.com/solaredge-web/p/license>.
 
-**Datenschutz / Privacy policy:** <https://mtbsteve.github.io/SEMonitorApp/Datenschutzrichtlinie.html>
-([Markdown source](Datenschutzrichtlinie.md))
+**Privacy.** There is nothing to collect: no backend, no analytics, no crash
+reporting, no third-party SDKs. Your OAuth credentials and the cached readings
+stay in the app's own App Group on the watch, and leave it only as HTTPS
+requests to `monitoringapi.solaredge.com` for your own site. Since v2.0.0 is a
+personal build, you are the only person who ever holds your credentials.
+
+*(The formal German privacy policy that an App Store listing requires was
+removed on 2026-11-05 together with the listing. It described the v1 API key
+flow, which no longer exists. Earlier revisions are in the git history.)*
 
 ---
 
