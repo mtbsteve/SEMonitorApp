@@ -1,7 +1,7 @@
 # SE Monitor
 
 A standalone watchOS app that displays your SolarEdge PV system on your wrist,
-talking **directly to the official SolarEdge Monitoring API** — no Home
+talking **directly to the official SolarEdge Monitoring API v2** — no Home
 Assistant, no third-party servers, no iPhone companion required.
 
 > **Disclaimer.** SE Monitor is an independent third-party app. It is **not
@@ -9,156 +9,386 @@ Assistant, no third-party servers, no iPhone companion required.
 > "SolarEdge" is a trademark of SolarEdge Technologies, Inc.; the name is used
 > here only to describe the SolarEdge Monitoring API this app reads from.
 
+All information about your PV system comes from the official SolarEdge
+Monitoring system. Please review the API terms at
+<https://monitoring.solaredge.com/solaredge-web/p/license>.
+
 **Datenschutz / Privacy policy:** <https://mtbsteve.github.io/SEMonitorApp/Datenschutzrichtlinie.html>
 ([Markdown source](Datenschutzrichtlinie.md))
 
-** All information about your SolarEdge PV system is derived from the official SolarEdge Monitoring system. Please review the API terms and conditions at this link: <https://monitoring.solaredge.com/solaredge-web/p/license>
+---
+
+## ⚠️ v2.0.0 is a breaking change: build-your-own only
+
+**v1.0.0** shipped on the App Store (2026-05-31) and let you paste a SolarEdge
+API key into the watch. **That version no longer works at all** — SolarEdge
+shut down the v1 Monitoring API on **2026-11-03**.
+
+**v2.0.0** is a full rewrite against the v2 API, and it cannot be distributed
+as a ready-to-run app. The reason is structural, not a policy choice:
+
+- v2 drops static API keys for **OAuth 2.0 authorization-code flow**.
+- Refreshing an access token requires the **client secret**.
+- SolarEdge's own docs are explicit: *"This step should run from your backend,
+  not from a browser. The Client Secret must not be exposed to the user."*
+
+A watch app has no backend. Any binary shipped to other people would either
+carry **my** secret and grant every installer access to **my** site, or need a
+server I'm not going to run for a hobby project. So v2.0.0 has **no
+user-enterable credential**: you register your own SolarEdge application, mint
+your own grant, and build the app for your own watch. The v1.0.0 App Store listing
+is being withdrawn, since the API it depends on no longer exists.
+
+If you own a SolarEdge site, a Mac, and a paid Apple Developer account, the
+[Build your own](#build-your-own) section gets you there in about 30 minutes.
+Everything needed is in this repo.
+
+---
 
 ## What it shows
 
-Three vertically-paged views on the Watch:
+Three vertically-paged views (turn the Digital Crown to page between them):
 
-1. **Overview** — current PV power, today's panel-side production, today's
-   grid export, per-battery state-of-charge chips, and a refresh button.
-2. **Power 24h** — line chart of Solar / Consumption / Grid (net) over the
-   last 24 hours, 15-min resolution; the Solar line is panel-side PV
-   (AC-side Production + DC battery charge correction).
-3. **Battery SoC 24h** — per-battery State-of-Charge over the last 24 hours.
+1. **Overview** — current PV power, today's production, today's grid export,
+   per-battery state-of-charge chips, and a refresh button.
+2. **Power 24h** — line chart of Solar / Consumption / Grid (net) over the last
+   24 hours at 15-minute resolution.
+3. **Battery SoC 24h** — per-battery state-of-charge over the last 24 hours.
 
 Plus a watch-face **complication** (circular / inline / corner / rectangular)
-showing instantaneous solar power; the rectangular family also lists per-stack
-battery SoC.
+showing instantaneous solar power; the rectangular family also lists
+per-battery SoC.
 
-Demo mode generates a synthetic 24h dataset for screenshots, demos, and
-testing without an API key.
+**Demo mode** generates a synthetic 24-hour dataset for screenshots and
+testing, with no credentials and no network calls.
+
+---
 
 ## API endpoints used
 
-Per the SolarEdge Monitoring API spec (March 2026 revision):
+Base URL `https://monitoringapi.solaredge.com/v2`, bearer-token auth on every
+call. One refresh = **4 calls**.
 
-| Endpoint                          | Purpose                                              |
-|-----------------------------------|------------------------------------------------------|
-| `/sites/list`                     | One-time site discovery from an Account key          |
-| `/site/{id}/energyDetails` (DAY)  | Today's Production / Consumption / FeedIn totals (HA method) |
-| `/site/{id}/powerDetails`         | 24h 15-min series for the Power chart                |
-| `/site/{id}/currentPowerFlow`     | Live PV / grid / load power + aggregate battery SoC  |
-| `/site/{id}/storageData`          | 24h per-battery SoC + per-slot battery power         |
+| Endpoint | Purpose |
+|---|---|
+| `/sites/{id}/overview` | Today's production / consumption / export totals |
+| `/sites/{id}/power` | 24h PV power series (`resolution=QUARTER_HOUR`) |
+| `/sites/{id}/meters/telemetry` | 24h consumption + grid import/export |
+| `/sites/{id}/storage/telemetry` | 24h per-battery state-of-charge |
 
-Authentication is by `api_key` query parameter on every call, exactly as the
-spec mandates. The key is stored only in watchOS `UserDefaults` (App Group),
-and is sent only as the query parameter in HTTPS calls to
-`monitoringapi.solaredge.com`.
+Site discovery is **not** an endpoint call: the OAuth callback returns your
+`site_id` directly, and it's baked in at build time.
 
-## Energy accounting (DC-coupled batteries)
+### v2 quirks worth knowing
 
-On a DC-coupled SolarEdge Home Battery site the API's energy meters are
-**AC-side**: `energyDetails` Production *misses* PV that charged the battery
-DC-side (it never reaches the inverter) and *includes* battery discharge that
-does. So it under-reports the portal's panel-side "Production" by the amount
-of PV that went into the battery. The app corrects this by **energy balance**,
-combining the AC meters (`energyDetails` timeUnit=DAY) with the battery
-charge/discharge from `storageData`:
+These each cost real debugging time; they're documented in the source at the
+point of use.
+
+- **`storage` and `meters` are dictionaries**, keyed by hardware serial number
+  (and, for meters, mixed with virtual names like `CONSUMPTION`). The keys
+  differ per site, so the client locates meters by *which fields they carry*,
+  never by key, and sorts storage keys so chart colours stay stable.
+- **`stateOfEnergy` is a 0…1 fraction despite its unit being `PERCENTAGE`.**
+  Verified: 0.18889 against `remainingEnergy` 1,653.76 Wh implies an 8,756 Wh
+  pack, and the series hits exactly 1.0 when full. Hence the ×100.
+- **Timestamps must be sent as UTC `Z`.** A literal `+` in a query string
+  decodes to a space, so `+02:00` offsets produce silent `400`s.
+- **Every series shares one envelope**: `{unit, values: [{timestamp, value}]}`.
+- **Advanced Monitoring endpoints** (per-destination data, Live Power Flow,
+  Weather Guard, Battery Backup Reserve) require Business Pro or above and
+  return `403` on the free tier. None are used here.
+
+---
+
+## Energy accounting
+
+**On v2 this is a solved problem, and the code must stay simple.** Read this
+before touching `fetchTodayTotals`.
+
+`overview.production.total` is the **panel-side** figure. It includes
+`toStorage` — PV that charged the battery DC-side without ever reaching the AC
+bus — and excludes energy the battery took *from the grid*, because grid import
+isn't a PV destination. That is exactly what the SolarEdge portal shows:
+
+| 2026-11-03 | API | Portal |
+|---|---|---|
+| Production | 6,942.34 Wh | 6.94 kWh |
+| Consumption | 43,311.15 Wh | 43.3 kWh |
+
+Cross-checked three ways: `/energy?resolution=DAY` independently returned
+6,942.34 Wh; `toStorage` was 1,844.89 Wh and *inside* the total, proving it's
+panel-side; and the battery discharged 13,713 Wh that day against only
+1,845 Wh of PV charge, so roughly 11,868 Wh came from the grid and correctly
+appears nowhere in `production`.
 
 ```
-Production Today   = AC_Production + charge − discharge − grid_charge
-Consumption Today  = AC_Production + Purchased − FeedIn − grid_charge
-Exported Today     = FeedIn                                  (grid-metered, exact)
-NOW power          = currentPowerFlow.PV.currentPower         (panel-side, exact)
-Battery SoC        = storageData per-battery state-of-charge
+Production Today   = overview.production.total      (panel-side, exact)
+Consumption Today  = overview.consumption.total     (exact)
+Exported Today     = overview.production.toGrid     (grid-metered, exact)
+NOW power          = last sample of /power          (panel-side)
+Battery SoC        = storage/telemetry stateOfEnergy × 100
 ```
 
-- **`charge` / `discharge`** — today's battery charge/discharge energy
-  (`storageData`). Charge is PV that bypassed the AC bus (added back);
-  discharge is battery output the AC meter mistook for PV (removed).
-- **`grid_charge`** — battery energy that came *from the grid* (e.g.
-  price-driven overnight top-ups), which is not solar. Taken from the
-  `ACGridCharging` telemetry × 0.9 (AC→DC).
+The 24h chart's Solar line is the **raw** `/power` series. That endpoint is
+panel-side too, confirmed by integrating a full day: the integral came to
+7,618 Wh against the day's 6,942 Wh (ratio ≈1.10, the expected rectangle-rule
+overshoot on instantaneous samples), whereas a genuinely AC-side series would
+have landed *below* the total at ≈0.73.
 
-Validated against the SolarEdge portal. **Known residual:** Production Today
-runs a stable **~2 kWh (≈3% on a ~55 kWh day) under** the portal. This is
-battery **round-trip / inverter efficiency**: the app subtracts the full DC
-discharge and adds the DC charge, but the AC `Production` meter only ever saw
-the post-conversion (lossy) values — so the reconstruction sits slightly low
-by a roughly constant amount through the day. We deliberately do **not** apply
-an efficiency fudge factor, since the true loss varies with battery usage and
-a fixed factor would over-fit one site. Grid charging itself is handled
-correctly (Production reads 0 overnight during grid charging, matching the
-portal). A secondary, smaller residual: only the **first** battery reports
-`ACGridCharging`, so on nights a *second* battery also grid-charges from the
-grid, the grid term under-counts — that per-battery grid data isn't exposed by
-the public API.
+> ### Do not reintroduce the v1 reconstruction
+>
+> v1 had to rebuild panel-side production by energy balance, because the v1
+> meters were AC-side:
+>
+> ```
+> Production = AC_Production + charge − discharge − grid_charge
+> ```
+>
+> That carried a stable ~3 % shortfall from battery round-trip losses, needed
+> `ACGridCharging` telemetry that only the *first* battery reported, and was a
+> permanent source of doubt. **All of it is deleted.** v2 reports the figure
+> directly and matches the portal exactly. Do not re-add it, and do not apply
+> an efficiency correction factor — there is nothing left to correct.
 
-**NOW power, Exported, and Battery SoC are exact** — `currentPowerFlow.PV` is
-already panel-side and the grid meter is exact, so neither is affected by the
-DC-coupling ambiguity.
+---
 
-**The 24h Power chart's Solar line** is corrected to panel-side per 15-min
-slot (`powerDetails` Production + battery charge − grid-sourced charging), so
-it shows PV that charged the battery in the morning and sits at 0 at night.
-This is a visual reconstruction for the chart shape; the headline Production
-Today figure uses the `energyDetails` DAY value described above.
+## Credit budget
 
-## Rate-limit accounting
+v2 bills **1 credit per endpoint call**, and the free tier is the binding
+constraint:
 
-SolarEdge enforces **300 calls/day per account token**. The watch-app refresh
-fetches **4 endpoints** (`energyDetails` + `powerDetails` + `currentPowerFlow` + `storageData`);
-the complication's `getTimeline` fetches just **1** (`currentPowerFlow`, which
-carries both live PV and battery SoC). To avoid double-spending, the
-complication reuses the shared cache if it was updated within the last **12
-minutes** (`last_api_fetch` stamp). Real-world foreground usage stays well
-under the cap; raise `AppConfig.refreshInterval` in
-`SEAPIApp Watch App/Models.swift` to widen the margin further.
+| | Free tier |
+|---|---|
+| Credits / month | 2,000 |
+| Calls / minute | 10 |
+| Registered applications | 1 |
+| Overage | **not available** |
+
+That last row is the dangerous one. There is no pay-as-you-go on free: hitting
+2,000 is a **hard wall until the billing cycle resets**, with no way to buy your
+way out. The app therefore rations itself rather than trusting the server to
+say no.
+
+`CreditBudget` in `SEConfig.swift` enforces a day-keyed counter in the App
+Group:
+
+- `callsPerRefresh = 4`
+- `maxCallsPerDay = 48` → 12 refreshes/day, ≈1,488 credits in a 31-day month
+
+A refresh that cannot afford its 4 calls fails with `.budgetExhausted` instead
+of issuing them. Raise `maxCallsPerDay` cautiously: 16 refreshes/day is
+≈1,984/month, i.e. no margin at all.
+
+**The complication never calls the API.** `getTimeline` only reads the snapshot
+the watch app cached. Two reasons, both load-bearing: a widget extension is a
+*separate process*, so it would race the watch app for a refresh token that
+rotates on every use (see below) and destroy the grant; and its timeline
+updates are frequent enough to burn the monthly budget on their own.
+
+---
+
+## OAuth token lifecycle (read this before debugging auth)
+
+The single biggest source of operational trouble, so it's worth being blunt
+about the mechanics:
+
+- Access tokens last **2 hours**.
+- **The refresh token rotates on every refresh.** The response carries a new
+  one and *the old one dies immediately*.
+- An unused grant expires after **14 idle days**.
+- Recovery from a dead grant requires **browser consent on a Mac**. There is no
+  way to do it from the watch.
+
+Three consequences:
+
+**1. Only one consumer per grant.** The app and `tools/se-token.sh` share the
+same grant. Once the app is running, **stop using the script** — the first
+refresh on either side invalidates the other. If you need the CLI for
+exploration, run a second consent flow and keep the two configs separate (note
+the free tier allows only one registered *application*, but a grant is
+per-authorization).
+
+**2. Refreshes must be serialized.** `SETokenStore` is an `actor` with explicit
+single-flight coalescing. An actor alone is not enough: every `await` is a
+suspension point where a second caller can enter, so two callers could each
+start their own refresh and mutually invalidate. The in-flight task is shared
+instead. It also persists the rotated refresh token *before* the access token,
+so a crash between the two writes loses only a cheap cache, not the grant.
+
+**3. Re-provisioning has to override stored state.** Stored tokens normally win
+over the build-time seed — they must, since the seed goes stale the moment the
+app's first refresh rotates it. But that alone would make a *deliberately*
+refreshed seed unusable: you'd regenerate `Secrets.xcconfig`, rebuild, and the
+app would keep preferring a stored token that is itself dead. `SETokenStore`
+records which seed it last adopted, so an ordinary relaunch keeps its stored
+token while a rebuild carrying **new** credentials resets to it. "Regenerate
+and rebuild" is therefore a dependable recovery path.
+
+---
 
 ## Requirements
 
-- macOS Tahoe + Xcode 16+
-- Apple Developer account (paid; free tier cannot install watchOS apps)
-- A SolarEdge **Account-level API key**: Monitoring Portal → Account Admin →
-  Company Details → API Access → Generate API key. (Site-level keys can't
-  call `/sites/list` and aren't currently supported by the setup UI.)
+- **macOS** with **Xcode 27.2** or later (watchOS 27.2 SDK)
+- **Paid Apple Developer account** — the free tier cannot install watchOS apps
+- [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`)
+- `jq` and `curl` for the token helper (`brew install jq`)
+- A SolarEdge site **you own**, with monitoring portal access
+- Apple Watch running **watchOS 10** or later
 
-## Generating the Xcode project
+---
 
-This repo uses [XcodeGen](https://github.com/yonaskolb/XcodeGen); the
-`.xcodeproj` is not committed.
+## Build your own
+
+### 1. Register a SolarEdge application
+
+1. Create a developer account at <https://api-docs.solaredge.com>.
+2. Create an **Application** with access type **Site Access** and scope
+   **`SITE_DATA`**.
+3. Copy the **Client ID** and **Client Secret**. The secret is shown **once** —
+   save it now.
+
+### 2. Mint a grant
 
 ```bash
-brew install xcodegen
+git clone https://github.com/mtbsteve/SEAPIApp.git
 cd SEAPIApp
-xcodegen
-open SEAPIApp.xcodeproj
+install -m 700 tools/se-token.sh ~/bin/se-token.sh   # or run it in place
 ```
 
-## First-time configuration in Xcode
+```bash
+tools/se-token.sh init
+```
 
-1. Select the project in the Xcode navigator and open the **Signing &
-   Capabilities** tab for each target (`SEAPIApp Watch App`,
-   `SEAPIComplication`).
-2. Set your **Team** (Apple ID).
-3. If Xcode complains the bundle IDs are taken, change the prefix
-   `com.mtbsteve.semonitor` to a unique one across both targets, then update the
-   matching **App Group** (`group.<your-prefix>`) and `keychain-access-group`
-   in:
-   - `project.yml`
-   - `SEAPIApp Watch App/SEAPIApp.entitlements`
-   - `SEAPIComplication/SEAPIComplication.entitlements`
-   - `SEAPIApp Watch App/Models.swift` (`AppConfig.appGroupID`)
-   - `SEAPIComplication/SEAPIComplication.swift` (top-of-file `appGroupID`)
-   - Re-run `xcodegen`.
-4. Confirm the **App Group** and **Keychain Sharing** capabilities are present
-   on both targets and use the same group / access group.
+This prompts for your Client ID and Secret and writes them to
+`~/.config/semonitor/se-api.env` (mode 600, **outside the repo**).
 
-## Running
+```bash
+tools/se-token.sh authorize
+```
 
-1. Build & run the **SEAPIApp Watch App** scheme on your Apple Watch.
-2. Paste your Account-level API key (dictation is easier than typing).
-3. The app calls `/sites/list`, picks the first site, and starts displaying
-   live data. Subsequent launches reuse the cached site ID.
-4. Add the **SolarEdge Power** complication to a watch face (long-press face →
-   Edit → Complications).
+Open the printed URL, approve your site, then copy the **entire** redirect URL
+from the address bar:
 
-Demo mode: tap **Use Demo Data** on the setup screen for a synthetic dataset
-that requires no API key and makes no network calls.
+```bash
+tools/se-token.sh exchange '<the full redirect URL>'
+```
+
+**Keep the single quotes.** An unquoted `&` splits the command in zsh and the
+exchange fails with no obvious reason. The script parses the `code` and
+`site_id` out of the URL and stores the refresh token.
+
+### 3. Generate `Secrets.xcconfig`
+
+```bash
+tools/se-token.sh xcconfig > Secrets.xcconfig
+```
+
+This verifies the grant against the live token endpoint before emitting
+anything, so it cannot bake in a dead token. Add your Apple Developer Team ID
+to the generated file (`SE_DEVELOPMENT_TEAM`) — see
+[`Secrets.xcconfig.example`](Secrets.xcconfig.example) for the full annotated
+template.
+
+> **Generate once, then build once.** Each `xcconfig` run rotates the refresh
+> token and invalidates the previous one. Running it twice without building in
+> between leaves your build with a dead token.
+
+### 4. Use your own bundle identifiers
+
+Bundle IDs are globally unique, so `com.mtbsteve.semonitor` will not sign for
+you. Replace the prefix in all of:
+
+- [`project.yml`](project.yml) — four places (`bundleIdPrefix` plus one
+  `PRODUCT_BUNDLE_IDENTIFIER` per target)
+- [`SEAPIApp Watch App/SEAPIApp.entitlements`](SEAPIApp%20Watch%20App/SEAPIApp.entitlements) — the App Group
+- [`SEAPIComplication/SEAPIComplication.entitlements`](SEAPIComplication/SEAPIComplication.entitlements) — the same App Group
+- [`SEAPIApp Watch App/Models.swift`](SEAPIApp%20Watch%20App/Models.swift) — `AppConfig.appGroupID`
+
+The App Group string must match in all three places or the complication reads
+an empty cache. Register the App Group in your Apple Developer account too.
+
+### 5. Build and install
+
+```bash
+xcodegen && open SEAPIApp.xcodeproj
+```
+
+Select the **SE Monitor (Watch)** scheme, choose your watch as the destination,
+and Run. See [Installing on a real watch](#installing-on-a-real-watch) below —
+it is fiddlier than it should be.
+
+Finally, add the complication: long-press the watch face → Edit →
+Complications → **SE Monitor**.
+
+---
+
+## Installing on a real watch
+
+Modern watches pair with Xcode **over Wi-Fi**, directly. Connecting your iPhone
+by USB does nothing for watch debugging — a common and time-wasting assumption.
+
+Check what Xcode actually sees:
+
+```bash
+xcrun devicectl list devices | grep -i watch
+```
+
+`connected` is what you want. `available (paired)` means Xcode knows and trusts
+the watch but cannot reach it — that's the "Currently Unavailable" state in
+Devices & Simulators. In that case:
+
+1. **Put the watch on its charger, unlocked, near the Mac.** While your iPhone
+   is nearby over Bluetooth the watch parks its Wi-Fi radio to save power, so
+   it's invisible to the Mac *because* everything is working normally. The
+   charger keeps Wi-Fi up.
+2. **Same Wi-Fi network as the Mac** — and not a guest network, which isolates
+   clients and blocks this permanently. If your 2.4 and 5 GHz bands use
+   separate SSIDs, put both devices on the same one.
+3. **Enable Developer Mode**: watch → Settings → Privacy & Security →
+   Developer Mode → On, then restart the watch.
+4. **Turn off Theater Mode and Low Power Mode** — both suppress Wi-Fi.
+
+The first install shows "Preparing debugger support for Apple Watch" and can
+genuinely take 10–20 minutes with no visible progress. Don't cancel it.
+
+### "Update to recommended settings"
+
+Don't accept it. The `.xcodeproj` is generated by XcodeGen and gitignored, so
+anything Xcode writes there is destroyed by the next `xcodegen` run — the
+warning returns, and you get a setting that looks applied but silently reverts.
+Change `options.xcodeVersion` in [`project.yml`](project.yml) instead; it is
+set to `27.2` and is what `LastUpgradeCheck` is generated from.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| **"Authorization expired"** | The refresh token is spent or past its 14-day idle life. Re-run steps 2–3 (`authorize` → `exchange` → `xcconfig`), then rebuild. Only browser consent on a Mac can fix this. |
+| **"No SolarEdge credentials in this build"** | The `SE*` keys are missing from the built `Info.plist`. Confirm `Secrets.xcconfig` exists and was present when you ran `xcodegen`. |
+| **"Daily API budget used. Showing cached data."** | `CreditBudget` stopped you at 48 calls. Resets at local midnight. |
+| **"Rate limit hit. Try again in a minute."** | More than 10 calls/minute. |
+| **"Monthly API credit limit reached."** | The 2,000-credit wall. No overage on free — it clears only at the billing-cycle reset. |
+| **Complication shows stale data** | By design: it is cache-only and never calls the API. Open the app to refresh. |
+| **Charts empty, Overview fine** | `meters`/`storage` keys differ per site. Check `tools/se-token.sh get "/sites/<id>/meters/telemetry?..."` for the field names actually present. |
+| **No battery screen** | Sites without storage return `400`/`404` from `storage/telemetry`, which is treated as "no batteries" rather than an error. |
+
+The token helper is the fastest way to inspect the live API by hand:
+
+```bash
+tools/se-token.sh today
+```
+
+```bash
+tools/se-token.sh get "/sites/3958787/overview?from=2026-11-03T00:00:00Z&to=2026-11-04T00:00:00Z"
+```
+
+Other subcommands: `init`, `authorize`, `exchange`, `token`, `header`, `get`,
+`day`, `energy`, `today`, `refresh`, `revoke`, `xcconfig`. Remember that every
+`refresh` rotates the grant out from under the app.
+
+---
 
 ## Architecture
 
@@ -166,85 +396,81 @@ that requires no API key and makes no network calls.
 SEAPIApp Watch App/
   SEAPIApp.swift            — App entry, @main, environment
   ContentView.swift         — Root + SetupView + Loading/Error views
-  OverviewView.swift        — Header card + Production/Exported stats + battery chips
-  PowerChartView.swift      — Swift Charts 24h power chart (Solar corrected to panel-side)
+  OverviewView.swift        — Header, NOW card, Production/Exported, SoC chips
+  PowerChartView.swift      — Swift Charts 24h power chart
   BatteryChartView.swift    — Swift Charts 24h per-battery SoC chart
-  Store.swift               — @MainActor ObservableObject, auto-refresh, shared cache
+  Store.swift               — @MainActor ObservableObject, auto-refresh, cache
   DemoData.swift            — Synthetic 24h dataset for demo mode
-  SolarEdgeAPI.swift        — async/await client (api_key query auth)
-  Models.swift              — Decodables + Snapshot/HistorySeries + AppConfig
-  SEAPIApp.entitlements     — App Group + Keychain sharing
+  SolarEdgeAPI.swift        — async/await v2 client (bearer auth)
+  SETokenStore.swift        — OAuth actor: rotation, single-flight, seed adoption
+  SEConfig.swift            — Info.plist credentials + CreditBudget
+  Models.swift              — Snapshot / HistorySeries / AppConfig / errors
+  Info.plist                — generated by XcodeGen; holds $(SE_*) placeholders
+  SEAPIApp.entitlements     — App Group
   PrivacyInfo.xcprivacy
-  Assets.xcassets/
 
 SEAPIComplication/
-  SEAPIComplication.swift   — WidgetKit complication (4 families)
+  SEAPIComplication.swift   — WidgetKit complication (4 families), cache-only
   SEAPIComplication.entitlements
-  PrivacyInfo.xcprivacy
-  Assets.xcassets/
-  Info.plist
+  Info.plist, PrivacyInfo.xcprivacy
+
+tools/
+  se-token.sh               — OAuth helper + curl wrapper for the v2 API
+
+project.yml                 — XcodeGen spec (the .xcodeproj is NOT committed)
+Secrets.xcconfig.example    — annotated credential template
+Secrets.xcconfig            — your credentials (gitignored)
 ```
 
-The Watch app and complication share an **App Group**
-(`group.com.mtbsteve.semonitor`) for the cached snapshot, history, and the compact
-values the complication reads.
+The watch app and complication share an **App Group** for the cached snapshot
+and history. The complication compiles only `Models.swift` from the watch
+app — deliberately *not* `SolarEdgeAPI.swift` or `SEConfig.swift`, so it cannot
+acquire credentials or refresh a token even by accident.
+
+Credentials reach the app as custom `Info.plist` keys via an explicit plist,
+**not** `INFOPLIST_KEY_*` build settings: those only work for keys on Xcode's
+known allowlist and custom names are **silently dropped**. That failure mode
+is invisible — the build succeeds and the app launches into the setup screen
+with nothing in the logs.
+
+---
 
 ## Security notes
 
-- The API key grants full read access to your SolarEdge site(s). Treat it like
-  a password.
-- It is stored only in watchOS `UserDefaults` on this device. It is sent over
-  HTTPS as a query parameter (per the SolarEdge spec).
-- Never commit your key. `.gitignore` excludes `*.token` and `Secrets.xcconfig`.
-- SolarEdge recommends rotating keys every 6 months.
+- The **client secret** is baked into your build. That is acceptable for an app
+  you install on your own watch and nowhere else. **Never distribute a binary
+  built from your `Secrets.xcconfig`** — it hands your SolarEdge site to
+  whoever installs it, and SolarEdge's terms forbid it.
+- Credentials live in exactly two places, both gitignored or outside the repo:
+  `Secrets.xcconfig` and `~/.config/semonitor/se-api.env` (mode 600). The
+  helper passes secrets to `curl` over **stdin**, so they never appear in `ps`.
+- `SEAPIApp Watch App/Info.plist` *is* committed — it contains only
+  `$(SE_CLIENT_ID)`-style placeholders, substituted at build time.
+- All traffic is HTTPS directly between the watch and
+  `monitoringapi.solaredge.com`. Nothing is sent anywhere else.
+- Revoke a grant you no longer need: `tools/se-token.sh revoke`.
+
+---
 
 ## Known limitations
 
-- Site-level API keys can't call `/sites/list`; the setup UI does not yet
-  support manual site-ID entry. Use an Account-level key.
-- Battery telemetries from some packs may have gaps; the chart skips missing
-  samples.
-- watchOS background-refresh budgets cap real-world cadence — the in-app
-  15-minute timer applies only while the app is in the foreground or the
-  complication is fetching its timeline.
+- **One grant, one consumer.** The app and the CLI helper cannot be used
+  against the same grant concurrently.
+- **Free-tier credits cap refresh cadence** at 12 refreshes/day by default.
+- **Complication data is only as fresh as the last app refresh**, by design.
+- **No background refresh.** The 15-minute timer runs only in the foreground;
+  watchOS background budgets make a dependable cadence impossible for an app
+  that must also stay inside a 2,000-credit month.
+- **Advanced Monitoring endpoints are unavailable** on the free tier (`403`), so
+  per-destination breakdowns and Live Power Flow are not used.
+- **Recovery needs a Mac.** A dead grant cannot be re-minted from the watch.
 
-## App Store description (template)
+---
 
-A copy-pasteable description for App Store Connect. The trademark disclaimer
-at the end should stay.
+## Version history
 
-```
-SE Monitor puts your SolarEdge PV system on your wrist.
-
-A standalone Apple Watch app that talks directly to the official SolarEdge
-Monitoring API — no Home Assistant, no third-party servers, no iPhone
-companion. Enter your SolarEdge Account-level API key once on the Watch and
-SE Monitor shows:
-
-• Current PV power (now), updated every 15 minutes
-• Today's panel-side production (corrected for DC battery charging on sites
-  with SolarEdge Home Batteries)
-• Today's energy exported to the grid
-• Per-battery State-of-Charge for each of your Home Battery stacks
-• A 24-hour line chart of Solar / Consumption / Grid
-• A 24-hour chart of battery State-of-Charge per battery
-• A watch-face complication (circular, inline, corner, and rectangular
-  families) with instantaneous solar power; the rectangular family also
-  shows your battery SoC
-
-All data flows directly between your Apple Watch and SolarEdge's servers —
-nothing is sent to any other party. Your API key is stored only in watchOS
-UserDefaults on this device.
-
-Demo mode generates a synthetic 24-hour dataset for screenshots and demos
-without an API key or any network access.
-
-Requirements:
-• A SolarEdge Account-level API key (Monitoring Portal → Account Admin →
-  Company Details → API Access → Generate API key)
-• An Apple Watch running watchOS 10 or later
-
-Disclaimer: SE Monitor is an independent third-party app. It is not
-affiliated with, endorsed by, or sponsored by SolarEdge Technologies, Inc.
-"SolarEdge" is a trademark of SolarEdge Technologies, Inc.
-```
+| Version | Status |
+|---|---|
+| **2.0.0** | v2 API rewrite. Personal build only — no user-enterable credential. |
+| 1.1 | Developed, never shipped: the v1 API shut down before submission. |
+| 1.0.0 (build 2) | First public App Store release, 2026-05-31. Non-functional since the v1 API shut down on 2026-11-03; listing being withdrawn. |

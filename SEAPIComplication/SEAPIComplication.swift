@@ -24,67 +24,33 @@ struct SolarProvider: TimelineProvider {
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<SolarEntry>) -> Void) {
-        Task {
-            let entry = await fetchOrCache()
-            // Schedule next refresh in 15 min. WidgetKit may delay this based
-            // on system heuristics (battery, usage), but it's the cadence we
-            // ask for. Matches the watch app's auto-refresh and stays under
-            // SolarEdge's 300/day quota.
-            let next = Date().addingTimeInterval(15 * 60)
-            completion(Timeline(entries: [entry], policy: .after(next)))
-        }
+        // Ask to be re-rendered in 15 min. WidgetKit may delay this on its own
+        // heuristics; either way this only re-reads the shared cache.
+        let next = Date().addingTimeInterval(15 * 60)
+        completion(Timeline(entries: [readCache()], policy: .after(next)))
     }
 
-    // MARK: - Fetch / cache
-
-    /// Try to fetch fresh data from the SolarEdge API. If credentials are
-    /// missing, the API call fails, or the last fetch was very recent (within
-    /// 12 min — sharing quota with the main app), fall back to the cached
-    /// snapshot the watch app last wrote.
-    private func fetchOrCache() async -> SolarEntry {
-        guard let store = UserDefaults(suiteName: AppConfig.appGroupID) else {
-            return SolarEntry(date: Date(), power: 0, batterySoC: [])
-        }
-
-        let apiKey = store.string(forKey: "seapi_api_key") ?? ""
-        let siteId = store.integer(forKey: "seapi_site_id")
-        guard !apiKey.isEmpty, apiKey != AppConfig.demoToken, siteId != 0 else {
-            return readCache()
-        }
-
-        // Quota guard: if the watch app or a previous complication fetch wrote
-        // the cache within the last 12 minutes, reuse it instead of hitting
-        // the API again. 15 min × (~96 base + complication) would otherwise
-        // double the daily API consumption.
-        if let lastFetch = store.object(forKey: "last_api_fetch") as? Date,
-           Date().timeIntervalSince(lastFetch) < 12 * 60 {
-            return readCache()
-        }
-
-        do {
-            // Single endpoint: currentPowerFlow gives panel-side PV power
-            // directly (excludes grid charging) plus aggregate battery SoC —
-            // everything the complication shows. Far cheaper than the watch
-            // app's full refresh.
-            let flow = try await SolarEdgeAPI.fetchPowerFlow(siteId: siteId, apiKey: apiKey)
-            let currentPV = max(0, flow.pvKW ?? 0)
-            // currentPowerFlow exposes only aggregate storage SoC, not per
-            // battery. Prefer the per-battery array the watch app cached if
-            // it's present; otherwise show the single aggregate value.
-            let cachedSoC = store.array(forKey: "complication_soc") as? [Double] ?? []
-            let socs = !cachedSoC.isEmpty ? cachedSoC : (flow.storageSoC.map { [$0] } ?? [])
-
-            let entry = SolarEntry(date: Date(), power: currentPV, batterySoC: socs)
-
-            store.set(currentPV, forKey: "complication_power")
-            store.set(Date(), forKey: "complication_updated")
-            store.set(Date(), forKey: "last_api_fetch")
-
-            return entry
-        } catch {
-            return readCache()
-        }
-    }
+    // MARK: - Cache
+    //
+    // ## Why the complication makes no API calls
+    //
+    // Under V1 it fetched `currentPowerFlow` itself with a static API key.
+    // That is not possible — nor safe — under V2, for two reasons:
+    //
+    // 1. **Refresh-token rotation.** V2 uses OAuth, and every refresh issues a
+    //    new refresh token while invalidating the old one. The complication is
+    //    a *separate process* from the watch app, so an in-process lock cannot
+    //    coordinate them. If both refreshed near-simultaneously, one would
+    //    invalidate the other's token and the grant would be destroyed —
+    //    recoverable only by re-running the browser consent flow on a Mac.
+    //
+    // 2. **Credits.** Every call costs 1 of the Free tier's 2,000 monthly
+    //    credits, with no overage. A complication waking on its own schedule
+    //    is an unbounded second consumer of the same allowance.
+    //
+    // So the watch app is the sole API client and the sole token refresher,
+    // and the complication renders whatever that last wrote. The cost is
+    // staleness between app launches, which is the right trade here.
 
     private func readCache() -> SolarEntry {
         guard let d = UserDefaults(suiteName: AppConfig.appGroupID) else {

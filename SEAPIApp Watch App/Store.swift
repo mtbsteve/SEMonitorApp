@@ -5,16 +5,15 @@ import WidgetKit
 @MainActor
 final class SEStore: ObservableObject {
 
-    // MARK: - Persisted credentials / config
+    // MARK: - Persisted state
     //
-    // Stored in the App Group's UserDefaults so the complication target
-    // (a separate process) can also read the API key + site ID and fetch
-    // its own timeline data when the watch app isn't running.
+    // V2 has no user-enterable credential: the site is reached with an OAuth
+    // bearer token minted by a browser consent flow, so credentials are baked
+    // in at build time (`SEConfig` / Secrets.xcconfig) rather than typed on
+    // the watch. All that persists here is demo mode and cosmetic labels.
     private static let groupStore = UserDefaults(suiteName: AppConfig.appGroupID)
 
-    @AppStorage("seapi_api_key", store: SEStore.groupStore) var apiKey: String = ""
-    @AppStorage("seapi_last_key", store: SEStore.groupStore) var lastEnteredKey: String = ""
-    @AppStorage("seapi_site_id", store: SEStore.groupStore) var siteId: Int = 0
+    @AppStorage("seapi_demo_mode", store: SEStore.groupStore) var demoMode: Bool = false
     @AppStorage("seapi_site_name", store: SEStore.groupStore) var siteName: String = ""
     @AppStorage("seapi_currency", store: SEStore.groupStore) var currency: String = "EUR"
 
@@ -26,8 +25,13 @@ final class SEStore: ObservableObject {
     @Published var isLoading: Bool = false
     @Published var lastUpdated: Date?
 
-    var hasConfig: Bool { !apiKey.isEmpty }
-    var isDemo: Bool { apiKey == AppConfig.demoToken }
+    var siteId: Int { SEConfig.siteID }
+    var hasConfig: Bool { demoMode || SEConfig.isConfigured }
+    var isDemo: Bool { demoMode }
+
+    /// Calls left in today's self-imposed budget — surfaced in the UI so a
+    /// stale reading is explainable rather than mysterious.
+    var creditsRemainingToday: Int { CreditBudget.remainingToday }
 
     // MARK: - Lifecycle
 
@@ -45,108 +49,70 @@ final class SEStore: ObservableObject {
     // MARK: - Refresh
 
     func refresh() async {
-        guard hasConfig else {
-            error = "Enter an API key to begin."
+        if demoMode {
+            applyDemo()
             return
         }
 
-        if isDemo {
-            applyDemo()
+        guard SEConfig.isConfigured else {
+            error = SolarEdgeError.notConfigured.localizedDescription
+            return
+        }
+
+        // Ration ourselves. SolarEdge's Free tier blocks every call for the
+        // rest of the billing cycle once the monthly allowance is gone, and
+        // there is no overage to buy — so refusing a refresh here is strictly
+        // better than risking a multi-day blackout. Cached data stays visible.
+        guard CreditBudget.canAfford() else {
+            error = SolarEdgeError.budgetExhausted.localizedDescription
             return
         }
 
         isLoading = true; defer { isLoading = false }
         error = nil
 
+        let id = SEConfig.siteID
+
         do {
-            // Discover site once. Cached siteId is reused thereafter; users with
-            // a Site-level key (no list permission) won't get here unless they
-            // happen to also have list permission, but the demo path covers
-            // them and we surface a clear error otherwise.
-            if siteId == 0 {
-                let sites = try await SolarEdgeAPI.fetchSites(apiKey: apiKey)
-                guard let first = sites.first else { throw SolarEdgeError.noSites }
-                siteId = first.id
-                siteName = first.name
-                if let c = first.currency, !c.isEmpty { currency = c }
-            }
+            // Four endpoints, 1 credit each, issued concurrently. If the
+            // access token has expired, all four land on
+            // SETokenStore.accessToken() at once — the actor's single-flight
+            // coalescing is what stops them racing to refresh and mutually
+            // invalidating the rotating refresh token.
+            async let totalsTask  = SolarEdgeAPI.fetchTodayTotals(siteId: id)
+            async let powerTask   = SolarEdgeAPI.fetchPowerSeries(siteId: id)
+            async let metersTask  = SolarEdgeAPI.fetchMeterSeries(siteId: id)
+            async let batteryTask = SolarEdgeAPI.fetchBatterySoC(siteId: id)
 
-            // Data sources:
-            //   • energyDetails (DAY)   → today's totals (HA "Produced/Exported
-            //                             Energy" method: meter values[0])
-            //   • powerDetails (15-min) → 24h chart series
-            //   • currentPowerFlow      → live PV (panel-side, exact)
-            //   • storageData           → battery SoC + per-slot battery power
-            async let energyDay = SolarEdgeAPI.fetchEnergyToday(siteId: siteId, apiKey: apiKey)
-            async let power = SolarEdgeAPI.fetchPowerHistory(siteId: siteId, apiKey: apiKey)
-            async let flow = SolarEdgeAPI.fetchPowerFlow(siteId: siteId, apiKey: apiKey)
-            async let battery = SolarEdgeAPI.fetchBatteryHistory(siteId: siteId, apiKey: apiKey)
-            let (day, p, f, b) = try await (energyDay, power, flow, battery)
+            let (totals, power, meters, battery) =
+                try await (totalsTask, powerTask, metersTask, batteryTask)
 
-            // Today's totals = SolarEdge's own daily meters via energyDetails
-            // timeUnit=DAY, read directly — identical to the Home Assistant
-            // SolarEdge integration's "Produced Energy" (Production) and
-            // "Exported Energy" (FeedIn) sensors.
-            // Panel-side reconstruction by energy balance. The AC meters
-            // (energyDetails) under-report Production on a DC-coupled battery
-            // site because PV that charges the battery DC-side never reaches
-            // the AC inverter, and they over-count it by the battery discharge
-            // that does pass through. Correcting both — and removing any
-            // grid-sourced charging — recovers the portal's panel-side figure:
-            //   Production  = AC_Production + charge − discharge − grid_charge
-            //   Consumption = AC_Production + Purchased − FeedIn − grid_charge
-            // Validated against the portal within ~1 kWh. (grid_charge from
-            // ACGridCharging; only the first battery reports it, so on nights
-            // a second battery also grid-charges this carries a small residual.)
-            let acProd = day["Production"] ?? 0
-            let purchased = day["Purchased"] ?? 0
-            let exported = day["FeedIn"] ?? 0
-            let gridCharge = b.todayGridChargeKWh
-            let production = max(0, acProd + b.todayChargeKWh - b.todayDischargeKWh - gridCharge)
-            let consumption = max(0, acProd + purchased - exported - gridCharge)
-
-            // Chart's Solar line corrected to panel-side PV per 15-min slot:
-            // AC Production + signed battery power − grid-sourced charging.
-            // This restores the morning production (PV that charged the battery
-            // DC-side, which the raw AC Production meter misses) and zeroes the
-            // line at night (battery discharge cancelled). Same approach that
-            // previously rendered correctly.
-            let sampleHours = 1.0 / 12.0, slotHours = 0.25
-            var gridByT: [Date: Double] = [:]
-            for pt in p.grid { gridByT[pt.t] = pt.v }
-            let correctedSolar: [HistorySeries.Point] = p.solar.map { sample in
-                let slotEnd = sample.t.addingTimeInterval(15 * 60)
-                let sumKW = b.combinedPowerKW.filter { $0.t >= sample.t && $0.t < slotEnd }
-                    .map(\.v).reduce(0, +)
-                let batteryKW = sumKW * sampleHours / slotHours
-                let chargeDC = max(0, batteryKW)
-                let gridChargeKW = min(chargeDC, max(0, gridByT[sample.t] ?? 0))
-                return HistorySeries.Point(t: sample.t, v: max(0, sample.v + batteryKW - gridChargeKW))
-            }
-
-            // Current PV power straight from the power-flow PV node — panel-side,
-            // inherently excludes grid charging, reads 0 at night. Exact.
-            let currentPower = f.pvKW ?? 0
-
-            let snap = Snapshot(
-                siteId: siteId,
-                siteName: siteName.isEmpty ? "Site \(siteId)" : siteName,
+            // Today's figures come straight from the site overview, which is
+            // already panel-side and already excludes grid-sourced battery
+            // charging. No reconstruction, no clamping, no efficiency factor —
+            // verified equal to the portal (6.94 kWh / 43.3 kWh on 2026-11-03).
+            self.snapshot = Snapshot(
+                siteId: id,
+                siteName: siteName.isEmpty ? "Site \(id)" : siteName,
                 currency: currency,
-                currentPowerKW: max(0, currentPower),
-                todayEnergyKWh: production,
-                todayExportedKWh: exported > 0 ? exported : nil,
-                todayConsumptionKWh: consumption > 0 ? consumption : nil,
+                currentPowerKW: max(0, power.last?.v ?? 0),
+                todayEnergyKWh: totals.productionKWh,
+                todayExportedKWh: totals.exportedKWh > 0 ? totals.exportedKWh : nil,
+                todayConsumptionKWh: totals.consumptionKWh > 0 ? totals.consumptionKWh : nil,
                 lifetimeEnergyKWh: nil,
-                batterySoC: b.latestSoC,
+                batterySoC: battery.latestSoC,
                 fetchedAt: Date()
             )
-            self.snapshot = snap
+
+            // The Solar line is the raw /power series: it is panel-side, so
+            // unlike V1 it needs no per-slot battery correction.
             self.history = HistorySeries(
-                solar: correctedSolar,
-                consumption: p.consumption,
-                grid: p.grid,
-                batteries: b.series
+                solar: power,
+                consumption: meters.consumption,
+                grid: meters.netGrid,
+                batteries: battery.series
             )
+
             self.lastUpdated = Date()
             cache()
             saveComplicationData()
@@ -162,29 +128,29 @@ final class SEStore: ObservableObject {
         snapshot = demo.snapshot
         history = demo.history
         lastUpdated = Date()
-        siteId = demo.snapshot.siteId
         siteName = demo.snapshot.siteName
         currency = demo.snapshot.currency
+        error = nil
         cache()
         saveComplicationData()
     }
 
+    /// Leave demo mode / clear cached data. Build-time credentials are not
+    /// affected — they live in the binary, not in storage.
     func clearConfig() {
         refreshTask?.cancel()
-        apiKey = ""
-        siteId = 0
-        siteName = ""
+        demoMode = false
         snapshot = .empty
         history = .empty
         error = nil
         lastUpdated = nil
-        // Wipe shared cache so the complication doesn't keep showing stale data.
         if let d = UserDefaults(suiteName: AppConfig.appGroupID) {
             for k in ["snapshot", "history", "complication_power", "complication_soc",
-                      "complication_currency", "complication_updated"] {
+                      "complication_currency", "complication_updated", "last_api_fetch"] {
                 d.removeObject(forKey: k)
             }
         }
+        Task { await SETokenStore.shared.clear() }
         WidgetCenter.shared.reloadAllTimelines()
     }
 
@@ -220,16 +186,15 @@ final class SEStore: ObservableObject {
         }
     }
 
-    /// Write a compact set of values for the complication, plus reload timelines.
-    /// Also stamps `last_api_fetch` so the complication's TimelineProvider knows
-    /// the cache is fresh and skips its own (quota-consuming) fetch.
+    /// Write the compact values the complication renders, then reload
+    /// timelines. The complication never calls the API itself — see
+    /// `SEAPIComplication.swift` — so this is its only data source.
     func saveComplicationData() {
         guard let d = UserDefaults(suiteName: AppConfig.appGroupID) else { return }
         d.set(snapshot.currentPowerKW ?? 0, forKey: "complication_power")
         d.set(snapshot.batterySoC, forKey: "complication_soc")
         d.set(snapshot.currency, forKey: "complication_currency")
         d.set(Date(), forKey: "complication_updated")
-        d.set(Date(), forKey: "last_api_fetch")
         WidgetCenter.shared.reloadAllTimelines()
     }
 }

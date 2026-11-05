@@ -5,16 +5,67 @@ options:
     iOS: "17.0"
     watchOS: "10.0"
   createIntermediateGroups: true
+  # Sets LastUpgradeCheck in the generated project. XcodeGen 2.45 otherwise
+  # writes 1430 (Xcode 14.3), which makes every Xcode 27 session show the
+  # "Update to recommended settings" warning. Do NOT accept that button: the
+  # .xcodeproj is generated and gitignored, so anything Xcode writes there is
+  # destroyed by the next `xcodegen` run and the warning comes straight back.
+  # Bump this instead when moving to a newer Xcode.
+  xcodeVersion: "27.2"
+
+# SolarEdge V2 OAuth credentials. Secrets.xcconfig is gitignored; copy it from
+# Secrets.xcconfig.example and fill in your own values before running xcodegen
+# (see "Build your own" in the README). xcodegen fails here if it's missing,
+# which is intentional — a build with no grant can't talk to the API.
+configFiles:
+  Debug: Secrets.xcconfig
+  Release: Secrets.xcconfig
 
 settings:
   base:
     SWIFT_VERSION: "5.9"
     # v1.0.0 (build 2) was the first public App Store release on 2026-05-31.
-    # v1.1 development starts here; build number resets so TestFlight treats
-    # the next upload as build 1 of a fresh version cycle.
-    MARKETING_VERSION: "1.1.0"
+    # v1.1 was developed but never shipped: SolarEdge shut down the V1 API on
+    # 2026-11-03 before it was submitted. v2.0.0 is the V2 rewrite, and the
+    # first personal-build-only version — there is no user-enterable API key
+    # any more, so it is a breaking change for anyone who used v1.0.0.
+    MARKETING_VERSION: "2.0.0"
     CURRENT_PROJECT_VERSION: "1"
-    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    # Xcode's recommended value is YES, and this project has zero shell script
+    # build phases (verified: no PBXShellScriptBuildPhase in the generated
+    # project), so the setting governs nothing and YES is safe. Set it back to
+    # NO if a script phase is ever added that needs to write outside its
+    # declared outputs.
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    # Signing team comes from Secrets.xcconfig, so regenerating the project
+    # doesn't wipe it. Without this, `xcodegen` resets signing to "no team"
+    # every time and you re-pick it in Xcode on every single rebuild.
+    DEVELOPMENT_TEAM: $(SE_DEVELOPMENT_TEAM)
+    CODE_SIGN_STYLE: Automatic
+
+# Explicit shared schemes. XcodeGen generates none by default, and a project
+# with no scheme can't be Run from Xcode at all (`xcodebuild -list` reports
+# "This project contains no schemes"). Xcode would autocreate them on open,
+# but those are per-user and vanish on the next regeneration.
+schemes:
+  SE Monitor (Watch):
+    build:
+      targets:
+        SEAPIApp Watch App: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  # Archive this one for App Store / TestFlight distribution — it embeds the
+  # watch app. Not needed for a personal install.
+  SE Monitor (Container):
+    build:
+      targets:
+        SEAPIApp: all
+    run:
+      config: Debug
+    archive:
+      config: Release
 
 targets:
   # ---------- iOS watchapp2 container (invisible delivery wrapper) ----------
@@ -55,21 +106,45 @@ targets:
     platform: watchOS
     sources:
       - path: "SEAPIApp Watch App"
+    # Explicit Info.plist rather than GENERATE_INFOPLIST_FILE.
+    #
+    # The SolarEdge credentials have to reach the bundle as custom Info.plist
+    # keys, and `INFOPLIST_KEY_<name>` only works for keys on Xcode's known
+    # allowlist — custom names are silently dropped. (Verified: the build
+    # succeeded and every SE* key was missing from the built Info.plist, so
+    # the app would have launched straight into the setup screen.) Values
+    # written into an explicit plist as $(VAR) *are* substituted at build time.
+    info:
+      path: "SEAPIApp Watch App/Info.plist"
+      properties:
+        CFBundleDisplayName: "SE Monitor"
+        # Must be stated explicitly: with an explicit plist, XcodeGen writes a
+        # literal "1.0" for the version instead of referencing the build
+        # settings, so MARKETING_VERSION would be silently ignored and every
+        # build would ship as 1.0.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        WKApplication: true
+        # Yes, WKWatchOnly stays true even with the watchapp2-container above.
+        # The container has LSApplicationLaunchProhibited + ITSWatchOnlyContainer,
+        # which means the iOS side never actually launches. The watch app is
+        # the only thing users see. ASC validation requires WKWatchOnly=true
+        # in this configuration (rejection code 90752 if false).
+        WKWatchOnly: true
+        ITSAppUsesNonExemptEncryption: false
+        # SolarEdge V2 credentials, Secrets.xcconfig -> Info.plist -> SEConfig.
+        # Only the watch app gets these: the complication is cache-only and
+        # must never hold credentials or refresh a token (see its header
+        # comment for why that would destroy the OAuth grant).
+        SEClientID: $(SE_CLIENT_ID)
+        SEClientSecret: $(SE_CLIENT_SECRET)
+        SERefreshToken: $(SE_REFRESH_TOKEN)
+        SESiteID: $(SE_SITE_ID)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.mtbsteve.semonitor.watchkitapp
-        GENERATE_INFOPLIST_FILE: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
-        INFOPLIST_KEY_CFBundleDisplayName: "SE Monitor"
-        INFOPLIST_KEY_WKApplication: YES
-        # Yes, WKWatchOnly stays YES even with the watchapp2-container above.
-        # The container has LSApplicationLaunchProhibited + ITSWatchOnlyContainer,
-        # which means the iOS side never actually launches. The watch app is
-        # the only thing users see. ASC validation requires WKWatchOnly=YES
-        # in this configuration (rejection code 90752 if NO).
-        INFOPLIST_KEY_WKWatchOnly: YES
-        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         TARGETED_DEVICE_FAMILY: "4"
         CODE_SIGN_ENTITLEMENTS: "SEAPIApp Watch App/SEAPIApp.entitlements"
     dependencies:
@@ -82,10 +157,11 @@ targets:
     platform: watchOS
     sources:
       - path: SEAPIComplication
-      # Share API client + models with the complication so its TimelineProvider
-      # can fetch its own data when the watch app isn't running.
+      # Models only — the complication renders the shared cache and makes no
+      # API calls, so it deliberately does NOT compile the API client or the
+      # token store. Under V2 a second process refreshing tokens would race
+      # the watch app and invalidate the rotating refresh token.
       - path: "SEAPIApp Watch App/Models.swift"
-      - path: "SEAPIApp Watch App/SolarEdgeAPI.swift"
     info:
       path: SEAPIComplication/Info.plist
       properties:

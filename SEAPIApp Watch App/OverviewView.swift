@@ -88,14 +88,20 @@ struct OverviewView: View {
             Image(systemName: "battery.75")
                 .font(.system(size: 11))
                 .foregroundColor(.green)
-            ForEach(0..<store.snapshot.batterySoC.count, id: \.self) { i in
+            // Iterate an enumerated array, not `0..<count`. SwiftUI only
+            // supports a *constant* Range in ForEach; a range derived from
+            // changing data (batterySoC grows from 0 to 2 entries on the
+            // first successful fetch) triggers the "ForEach count changed"
+            // runtime warning and can leave the row stale or crash on an
+            // index that no longer exists.
+            ForEach(Array(store.snapshot.batterySoC.enumerated()), id: \.offset) { entry in
                 HStack(spacing: 1) {
-                    Text("B\(i + 1)").font(.system(size: 8)).foregroundColor(.secondary)
-                    Text("\(Int(store.snapshot.batterySoC[i].rounded()))%")
+                    Text("B\(entry.offset + 1)").font(.system(size: 8)).foregroundColor(.secondary)
+                    Text("\(Int(entry.element.rounded()))%")
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
                         .foregroundColor(.white)
                 }
-                if i < store.snapshot.batterySoC.count - 1 {
+                if entry.offset < store.snapshot.batterySoC.count - 1 {
                     Text("•").font(.system(size: 8)).foregroundColor(.secondary)
                 }
             }

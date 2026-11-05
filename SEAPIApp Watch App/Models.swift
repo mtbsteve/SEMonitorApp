@@ -9,160 +9,15 @@ enum AppConfig {
     /// the complication (it shows "—").
     static let appGroupID = "group.com.mtbsteve.semonitor"
 
-    static let baseURL = URL(string: "https://monitoringapi.solaredge.com")!
-
-    /// Foreground auto-refresh cadence. With 3 endpoints per refresh
-    /// (overview + powerDetails + storageData) this is 96 × 3 = 288 calls/day,
-    /// just under SolarEdge's 300/day quota.
+    /// Foreground auto-refresh cadence.
+    ///
+    /// This timer only runs while the app is in the foreground, so in practice
+    /// it fires rarely — the dominant cost is one refresh per app launch. The
+    /// real protection against SolarEdge's hard monthly credit wall is
+    /// `CreditBudget`, not this interval. See `SEConfig.swift`.
     static let refreshInterval: TimeInterval = 15 * 60
 
     static let demoToken = "demo"
-}
-
-// MARK: - API response shapes (Decodable)
-
-/// /sites/list nests responses as `{ "sites": { "count": …, "list": [Site] } }`.
-/// The top-level key is sometimes capitalized "Sites" in older responses; we
-/// handle both via a custom decoder.
-struct SitesEnvelope: Decodable {
-    let count: Int
-    let list: [Site]
-
-    init(from decoder: Decoder) throws {
-        let root = try decoder.container(keyedBy: AnyKey.self)
-        let key = root.allKeys.first { $0.stringValue.lowercased() == "sites" }
-            ?? AnyKey(stringValue: "sites")!
-        let inner = try root.nestedContainer(keyedBy: AnyKey.self, forKey: key)
-        self.count = (try? inner.decode(Int.self, forKey: AnyKey(stringValue: "count")!)) ?? 0
-        // The docs example uses "list" but the live API returns "site" (singular).
-        // Accept either, plus decode each element through OptionalSite so a
-        // malformed entry can't drop the whole array.
-        let listKey = inner.allKeys.first { ["list", "site"].contains($0.stringValue.lowercased()) }
-            ?? AnyKey(stringValue: "site")!
-        let optionals = (try? inner.decode([OptionalSite].self, forKey: listKey)) ?? []
-        self.list = optionals.compactMap(\.site)
-    }
-
-    private struct AnyKey: CodingKey {
-        var stringValue: String
-        var intValue: Int? { nil }
-        init?(stringValue: String) { self.stringValue = stringValue }
-        init?(intValue: Int) { return nil }
-    }
-}
-
-struct Site: Decodable, Identifiable {
-    let id: Int
-    let name: String
-    let peakPower: Double?
-    let currency: String?
-    let status: String?
-
-    /// Lenient decoder: only `id` is required. Anything missing or the wrong
-    /// type defaults to nil/empty so one weird site in /sites/list can't blank
-    /// the whole array.
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = try c.decode(Int.self, forKey: .id)
-        self.name = (try? c.decode(String.self, forKey: .name)) ?? "Site \(self.id)"
-        self.peakPower = try? c.decode(Double.self, forKey: .peakPower)
-        self.currency = try? c.decode(String.self, forKey: .currency)
-        self.status = try? c.decode(String.self, forKey: .status)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case id, name, peakPower, currency, status
-    }
-}
-
-/// Wrapper that decodes a Site but swallows per-element errors. Used when
-/// decoding the /sites/list array so a single malformed entry doesn't drop
-/// every site in the response.
-struct OptionalSite: Decodable {
-    let site: Site?
-    init(from decoder: Decoder) throws {
-        self.site = try? Site(from: decoder)
-    }
-}
-
-struct PowerDetailsEnvelope: Decodable {
-    let powerDetails: PowerDetails
-}
-
-struct PowerDetails: Decodable {
-    let timeUnit: String
-    let unit: String
-    let meters: [Meter]
-
-    struct Meter: Decodable {
-        let type: String
-        let values: [PowerPoint]
-    }
-    struct PowerPoint: Decodable {
-        let date: String
-        let value: Double?
-    }
-}
-
-/// energyDetails has the same shape as powerDetails (meters → values), just
-/// with energy (Wh) instead of power (W). Reuse PowerDetails for decoding.
-struct EnergyDetailsEnvelope: Decodable {
-    let energyDetails: PowerDetails
-}
-
-struct PowerFlowEnvelope: Decodable {
-    let siteCurrentPowerFlow: Flow
-    struct Flow: Decodable {
-        let unit: String?
-        let PV: Element?
-        let STORAGE: Element?
-        let GRID: Element?
-        let LOAD: Element?
-        struct Element: Decodable {
-            let currentPower: Double?
-            let chargeLevel: Double?
-        }
-    }
-}
-
-struct StorageDataEnvelope: Decodable {
-    let storageData: StorageData
-}
-
-struct StorageData: Decodable {
-    let batteryCount: Int
-    let batteries: [Battery]
-
-    struct Battery: Decodable {
-        let serialNumber: String?
-        let nameplate: Double?
-        let modelNumber: String?
-        let telemetryCount: Int?
-        let telemetries: [Telemetry]
-    }
-    struct Telemetry: Decodable {
-        let timeStamp: String
-        let stateOfCharge: Double?
-        let power: Double?
-        let acGridCharging: Double?   // Wh of grid energy used to charge (AC)
-
-        /// SolarEdge docs say the SoC field is `stateOfCharge`, but the live API
-        /// for SolarEdge Home Battery sites returns `batteryPercentageState`.
-        /// Accept either, preferring the documented name if both appear.
-        init(from decoder: Decoder) throws {
-            let c = try decoder.container(keyedBy: CodingKeys.self)
-            self.timeStamp = try c.decode(String.self, forKey: .timeStamp)
-            self.stateOfCharge = (try? c.decode(Double.self, forKey: .stateOfCharge))
-                ?? (try? c.decode(Double.self, forKey: .batteryPercentageState))
-            self.power = try? c.decode(Double.self, forKey: .power)
-            self.acGridCharging = try? c.decode(Double.self, forKey: .acGridCharging)
-        }
-
-        private enum CodingKeys: String, CodingKey {
-            case timeStamp, stateOfCharge, batteryPercentageState, power
-            case acGridCharging = "ACGridCharging"
-        }
-    }
 }
 
 // MARK: - App-level snapshots (Codable for shared-defaults cache)
@@ -172,17 +27,18 @@ struct Snapshot: Codable, Equatable {
     var siteId: Int
     var siteName: String
     var currency: String
-    /// Current PV power in kW (currentPowerFlow.PV — panel-side).
+    /// Current PV power in kW — latest sample of the `/power` series
+    /// (panel-side).
     var currentPowerKW: Double?
-    /// Today's PV production in kWh (energyDetails Production).
+    /// Today's panel-side PV production in kWh (`overview.production.total`).
     var todayEnergyKWh: Double?
-    /// Today's energy exported to grid in kWh (energyDetails FeedIn).
+    /// Today's energy exported to grid in kWh (`overview.production.toGrid`).
     var todayExportedKWh: Double?
-    /// Today's house consumption in kWh (energyDetails Consumption).
+    /// Today's house consumption in kWh (`overview.consumption.total`).
     var todayConsumptionKWh: Double?
-    /// Lifetime energy in kWh (no longer populated; kept for cache compatibility).
+    /// Lifetime energy in kWh (not populated; kept for cache compatibility).
     var lifetimeEnergyKWh: Double?
-    /// Per-battery state-of-charge percentages (0…100) at the most recent telemetry.
+    /// Per-battery state-of-charge percentages (0…100) at the latest telemetry.
     var batterySoC: [Double]
     var fetchedAt: Date
 
@@ -206,12 +62,11 @@ struct HistorySeries: Codable, Equatable {
         let t: Date
         let v: Double
     }
-    /// Production (PV) in kW.
+    /// Panel-side PV production in kW.
     var solar: [Point]
-    /// Consumption in kW.
+    /// House consumption in kW.
     var consumption: [Point]
-    /// Net grid in kW. Positive = importing from grid (Purchased),
-    /// negative = exporting to grid (FeedIn).
+    /// Net grid in kW. Positive = importing, negative = exporting.
     var grid: [Point]
     /// One series per battery, SoC in % (0…100).
     var batteries: [[Point]]
@@ -226,46 +81,48 @@ struct HistorySeries: Codable, Equatable {
     }
 }
 
-// MARK: - SolarEdge date parsing
-
-enum SolarEdgeDate {
-    /// SolarEdge timestamps are "YYYY-MM-DD HH:mm:ss" in the site's time zone.
-    /// Without a tz suffix, we interpret them as local time on the device.
-    /// For a homeowner watching their own site this is correct in practice.
-    static let formatter: DateFormatter = {
-        let f = DateFormatter()
-        f.calendar = Calendar(identifier: .gregorian)
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone.current
-        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        return f
-    }()
-
-    static func parse(_ s: String) -> Date? { formatter.date(from: s) }
-    static func format(_ d: Date) -> String { formatter.string(from: d) }
-}
-
 // MARK: - Errors
 
 enum SolarEdgeError: LocalizedError {
     case http(Int)
     case decoding(String)
-    case noSites
     case network(String)
     case invalidConfig
+    /// Secrets.xcconfig is missing, still holds placeholders, or the client
+    /// credentials were rejected.
+    case notConfigured
+    /// The refresh token is spent or past its 14-day idle life. Only re-running
+    /// the consent flow on a Mac can fix this.
+    case authExpired
+    case oauth(String)
+    /// HTTP 429, per-minute CPM exceeded. Retryable shortly.
+    case rateLimit
+    /// HTTP 429, monthly credit allowance exhausted. Not retryable until the
+    /// billing cycle resets; the Free tier has no overage.
+    case creditLimit
+    /// Our own self-imposed daily cap, which exists to keep us away from
+    /// `creditLimit`.
+    case budgetExhausted
 
     var errorDescription: String? {
         switch self {
         case .http(let code):
             switch code {
-            case 401, 403: return "Invalid API key (HTTP \(code))"
-            case 429: return "Rate limit hit (HTTP 429). Try again later."
-            default: return "HTTP \(code) error"
+            case 401: return "Not authorized (401). Token may be revoked."
+            case 403: return "Forbidden (403). Tier or scope restriction."
+            default:  return "HTTP \(code) error"
             }
         case .decoding(let msg): return "Decode error: \(msg)"
-        case .noSites: return "No sites found for this account."
-        case .network(let msg): return "Network error: \(msg)"
-        case .invalidConfig: return "Missing API key or site."
+        case .network(let msg):  return "Network error: \(msg)"
+        case .invalidConfig:     return "Invalid configuration."
+        case .notConfigured:     return "No SolarEdge credentials in this build. See README."
+        case .authExpired:       return "Authorization expired. Re-run the consent flow on your Mac."
+        case .oauth(let msg):    return "OAuth error: \(msg)"
+        case .rateLimit:         return "Rate limit hit. Try again in a minute."
+        case .creditLimit:       return "Monthly API credit limit reached. Resets next billing cycle."
+        // Deliberately does not interpolate CreditBudget: the complication
+        // target compiles Models.swift but not SEConfig.swift.
+        case .budgetExhausted:   return "Daily API budget used. Showing cached data."
         }
     }
 }

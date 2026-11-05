@@ -61,9 +61,15 @@ private struct MainTabs: View {
 
 // MARK: - Setup
 
+/// Shown when the build carries no usable SolarEdge grant.
+///
+/// There is deliberately nothing to type here. The V2 API reaches a site with
+/// an OAuth bearer token, and minting one needs a browser consent screen plus
+/// a client secret — neither of which exists on a watch. Credentials are
+/// therefore baked in at build time from `Secrets.xcconfig`, so the only fix
+/// is on the Mac. Demo mode remains available so the UI is still explorable.
 struct SetupView: View {
     @EnvironmentObject var store: SEStore
-    @State private var keyInput: String = ""
 
     var body: some View {
         ScrollView {
@@ -75,21 +81,17 @@ struct SetupView: View {
                 Text("SE Monitor")
                     .font(.system(size: 14, weight: .bold))
 
-                Text("Enter your SolarEdge Account-level API key (from Monitoring portal → Admin → API Access).")
+                Text("No SolarEdge credentials in this build.")
+                    .font(.system(size: 10, weight: .medium))
+                    .multilineTextAlignment(.center)
+
+                Text("Copy Secrets.xcconfig.example to Secrets.xcconfig, run tools/se-token.sh to authorize your site, then rebuild. See the README.")
                     .font(.system(size: 9))
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
 
-                TextField("API Key", text: $keyInput)
-                    .font(.system(size: 10, design: .monospaced))
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-
-                Button("Save & Connect") {
-                    let cleaned = sanitize(keyInput)
-                    store.apiKey = cleaned
-                    store.lastEnteredKey = cleaned
-                    store.siteId = 0   // force rediscovery
+                Button("Use Demo Data") {
+                    store.demoMode = true
                     Task { await store.refresh() }
                 }
                 .font(.system(size: 11, weight: .semibold))
@@ -98,34 +100,9 @@ struct SetupView: View {
                 .padding(.vertical, 6)
                 .background(Color.yellow)
                 .cornerRadius(8)
-                .disabled(keyInput.trimmingCharacters(in: .whitespaces).isEmpty)
-
-                Button("Use Demo Data") {
-                    store.apiKey = AppConfig.demoToken
-                    Task { await store.refresh() }
-                }
-                .font(.system(size: 10))
-                .foregroundColor(.blue)
             }
             .padding()
         }
-        .onAppear {
-            if keyInput.isEmpty && store.lastEnteredKey != AppConfig.demoToken {
-                keyInput = store.lastEnteredKey
-            }
-        }
-    }
-
-    private func sanitize(_ s: String) -> String {
-        s.trimmingCharacters(in: .whitespacesAndNewlines)
-            .components(separatedBy: .controlCharacters).joined()
-            .components(separatedBy: .whitespacesAndNewlines).joined()
-            .replacingOccurrences(of: "\u{2018}", with: "'")
-            .replacingOccurrences(of: "\u{2019}", with: "'")
-            .replacingOccurrences(of: "\u{201C}", with: "\"")
-            .replacingOccurrences(of: "\u{201D}", with: "\"")
-            .replacingOccurrences(of: "\u{2013}", with: "-")
-            .replacingOccurrences(of: "\u{2014}", with: "-")
     }
 }
 
@@ -163,7 +140,7 @@ struct ErrorView: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.blue)
 
-                Button("Change API Key") { store.clearConfig() }
+                Button("Reset") { store.clearConfig() }
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.orange)
             }
